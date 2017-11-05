@@ -146,7 +146,7 @@ init([]) ->
     process_flag(trap_exit, true),
 
     {ok, Sock} = gen_tcp:connect("10.74.68.81", 48443, [binary, {packet, 0}]),
-    {ok, #state{sock=Sock}}.
+    {ok, #state{sock=Sock}, 0}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -192,7 +192,19 @@ handle_cast(_Msg, State) ->
 %%--------------------------------------------------------------------
 handle_info({tcp, Sock, Data}, State) ->
     error_logger:info_msg("[~p: ~p] receive: ~p~n", [?MODULE, ?LINE | [Data]]),
-    handle_data(Data, State).
+    handle_data(Data, State);
+handle_info(timeout, #state{sock=Sock} = State) ->
+    error_logger:info_msg("[~p: ~p] sending client hello msg~n", [?MODULE, ?LINE | []]),
+    HelloSimpleXml = client_hello([{capability, [?NETCONF_BASE_CAP ++ ?NETCONF_BASE_CAP_VSN_1_1]},
+                                   {capability, ["urn:ietf:params:netconf:capability:exi:1.0"]}]),
+    Bin = indent(to_xml_doc(HelloSimpleXml)),
+    gen_tcp:send(Sock, Bin),
+    {noreply, State};
+handle_info(Info, State) ->
+    error_logger:info_msg("[~p: ~p] Info: ~p~n", [?MODULE, ?LINE | [Info]]),
+    {noreply, State}.
+
+
 %    {noreply, State}.
 
 %%--------------------------------------------------------------------
