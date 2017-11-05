@@ -163,16 +163,22 @@ init([]) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_call(get_scheme, _From, #state{sock=Sock}=State) ->
+handle_call(get_scheme, From, #state{sock=Sock, pending=Pending, msg_id=MsgId}=State) ->
     Filter = [{'netconf-state', [],[{schemas, []}]}],
-    MsgId = State#state.msg_id,
     SimpleXml = encode_rpc_operation(get, [Filter]),
     Bin = snc_utils:indent(to_xml_doc({rpc,
                       [{'message-id',MsgId} | ?NETCONF_NAMESPACE_ATTR],
                       [SimpleXml]})),
+
     error_logger:info_msg("[~p: ~p] Bin: ~p~n", [?MODULE, ?LINE | [Bin]]),
     gen_tcp:send(Sock, Bin),
-    {reply, ok, State};
+    {Ref,TRef} = set_request_timer(?DEFAULT_TIMEOUT),
+    {noreply, State#state{msg_id=MsgId+1,
+                          pending=[#pending{tref=TRef,
+                                            ref=Ref,
+                                            msg_id=MsgId,
+                                            op=get,
+                                            caller=From} | Pending]}};
 handle_call(Request, _From, State) ->
     error_logger:info_msg("[~p: ~p] ~p~n", [?MODULE, ?LINE | [State]]),
     Reply = ok,
