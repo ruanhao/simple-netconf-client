@@ -7,7 +7,7 @@
 %%% Created :  5 Nov 2017 by Hao Ruan <ruanhao1116@google.com>
 %%%-------------------------------------------------------------------
 -module(snc_prototype).
-
+-compile(export_all).
 %% Default port number (RFC 4742/IANA).
 -define(DEFAULT_PORT, 830).
 
@@ -15,12 +15,13 @@
 -define(DEFAULT_TIMEOUT, infinity). %% msec
 
 %% Namespaces
+-define(NETCONF_NAMESPACE,"urn:ietf:params:xml:ns:netconf:base:1.0").
 -define(NETCONF_NAMESPACE_ATTR,[{xmlns,?NETCONF_NAMESPACE}]).
 -define(ACTION_NAMESPACE_ATTR,[{xmlns,?ACTION_NAMESPACE}]).
 -define(NETCONF_NOTIF_NAMESPACE_ATTR,[{xmlns,?NETCONF_NOTIF_NAMESPACE}]).
 -define(NETMOD_NOTIF_NAMESPACE_ATTR,[{xmlns,?NETMOD_NOTIF_NAMESPACE}]).
 
--define(NETCONF_NAMESPACE,"urn:ietf:params:xml:ns:netconf:base:1.0").
+
 -define(ACTION_NAMESPACE,"urn:com:ericsson:ecim:1.0").
 -define(NETCONF_NOTIF_NAMESPACE,
         "urn:ietf:params:xml:ns:netconf:notification:1.0").
@@ -68,12 +69,12 @@
 
 %% Logging information for error handler
 -record(conn_log, {header=true,
-		   client,
-		   name,
-		   address,
-		   conn_pid,
-		   action,
-		   module}).
+                   client,
+                   name,
+                   address,
+                   conn_pid,
+                   action,
+                   module}).
 
 %% Client state
 -record(state, {
@@ -162,6 +163,16 @@ init([]) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+handle_call(get_scheme, _From, #state{sock=Sock}=State) ->
+    Filter = [{'netconf-state', [],[{schemas, []}]}],
+    MsgId = State#state.msg_id,
+    SimpleXml = encode_rpc_operation(get, [Filter]),
+    Bin = snc_utils:indent(to_xml_doc({rpc,
+                      [{'message-id',MsgId} | ?NETCONF_NAMESPACE_ATTR],
+                      [SimpleXml]})),
+    error_logger:info_msg("[~p: ~p] Bin: ~p~n", [?MODULE, ?LINE | [Bin]]),
+    gen_tcp:send(Sock, Bin),
+    {reply, ok, State};
 handle_call(Request, _From, State) ->
     error_logger:info_msg("[~p: ~p] ~p~n", [?MODULE, ?LINE | [State]]),
     Reply = ok,
@@ -195,7 +206,7 @@ handle_info({tcp, Sock, Data}, State) ->
     handle_data(Data, State);
 handle_info(timeout, #state{sock=Sock} = State) ->
     error_logger:info_msg("[~p: ~p] sending client hello msg~n", [?MODULE, ?LINE | []]),
-    HelloSimpleXml = client_hello([{capability, [?NETCONF_BASE_CAP ++ ?NETCONF_BASE_CAP_VSN_1_1]},
+    HelloSimpleXml = client_hello([%{capability, [?NETCONF_BASE_CAP ++ ?NETCONF_BASE_CAP_VSN_1_1]},
                                    {capability, ["urn:ietf:params:netconf:capability:exi:1.0"]}]),
     Bin = snc_utils:indent(to_xml_doc(HelloSimpleXml)),
     gen_tcp:send(Sock, Bin),
@@ -377,6 +388,16 @@ encode_rpc_operation({create_subscription,_},
          filter(Filter) ++
          maybe_element(startTime,StartTime) ++
          maybe_element(stopTime,StopTime)}.
+
+%% filter(undefined) ->
+%%     [];
+%% filter({xpath,Filter}) when ?is_string(Filter) ->
+%%     [{filter,[{type,"xpath"},{select, Filter}],[]}];
+%% filter(Filter) when is_list(Filter) ->
+%%     [{filter,[{'xmlns:ns0', "urn:ietf:params:xml:ns:netconf:base:1.0"},
+%%               {'ns0:type',"subtree"}],Filter}];
+%% filter(Filter) ->
+%%     filter([Filter]).
 
 filter(undefined) ->
     [];
@@ -919,3 +940,12 @@ ssh_close(Connection=#connection{reference = CM}) ->
 %%----------------------------------------------------------------------
 %% END OF MODULE
 %%----------------------------------------------------------------------
+test() ->
+    Filter = [{netconf_state, [{xmlns, "urn:ietf:params:xml:ns:yang:ietf-netconf-monitoring"}],[{schemas, []}]}],
+    MsgId = 1,
+    SimpleXml = encode_rpc_operation(get, [Filter]),
+    Bin = snc_utils:indent(to_xml_doc({rpc,
+                      [{'message-id',MsgId} | ?NETCONF_NAMESPACE_ATTR],
+                                       [SimpleXml]})),
+
+    Bin.
