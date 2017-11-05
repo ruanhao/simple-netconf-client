@@ -179,6 +179,21 @@ handle_call(get_scheme, From, #state{sock=Sock, pending=Pending, msg_id=MsgId}=S
                                             msg_id=MsgId,
                                             op=get,
                                             caller=From} | Pending]}};
+
+handle_call(subscription, From, #state{sock=Sock, pending=Pending, msg_id=MsgId}=State) ->
+    SimpleXml =  {'create-subscription',?NETCONF_NOTIF_NAMESPACE_ATTR,
+                  [{stream,["NETCONF"]}]},
+    Bin = snc_utils:indent(to_xml_doc({rpc,
+                      [{'message-id',MsgId} | ?NETCONF_NAMESPACE_ATTR],
+                      [SimpleXml]})),
+    gen_tcp:send(Sock, Bin),
+    {Ref,TRef} = set_request_timer(?DEFAULT_TIMEOUT),
+    {reply, ok, State#state{msg_id=MsgId+1,
+                          pending=[#pending{tref=TRef,
+                                            ref=Ref,
+                                            msg_id=MsgId,
+                                            op=get,
+                                            caller=From} | Pending]}};
 handle_call(Request, _From, State) ->
     error_logger:info_msg("[~p: ~p] ~p~n", [?MODULE, ?LINE | [State]]),
     Reply = ok,
