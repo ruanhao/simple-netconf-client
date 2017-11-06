@@ -38,9 +38,8 @@
 -define(FORMAT(_F, _A), lists:flatten(io_lib:format(_F, _A))).
 
 
--define(error(ConnName,Report),
-        error_logger:error_report([{ct_connection,ConnName},
-                                   {client,self()},
+-define(error(Report),
+        error_logger:error_report([{client,self()},
                                    {module,?MODULE},
                                    {line,?LINE} |
                                    Report])).
@@ -165,11 +164,8 @@ init([]) ->
 %%--------------------------------------------------------------------
 handle_call(get_scheme, From, #state{sock=Sock, pending=Pending, msg_id=MsgId}=State) ->
     Filter = [{'netconf-state', [],[{schemas, []}]}],
-    SimpleXml = encode_rpc_operation(get, [Filter]),
-    Bin = snc_utils:indent(to_xml_doc({rpc,
-                      [{'message-id',MsgId} | ?NETCONF_NAMESPACE_ATTR],
-                      [SimpleXml]})),
-
+    SimpleXml = snc_codec:rpc_get(MsgId, Filter),
+    Bin = snc_codec:to_pretty_xml_doc(SimpleXml),
     error_logger:info_msg("[~p: ~p] Bin: ~p~n", [?MODULE, ?LINE | [Bin]]),
     gen_tcp:send(Sock, Bin),
     {Ref,TRef} = set_request_timer(?DEFAULT_TIMEOUT),
@@ -179,21 +175,20 @@ handle_call(get_scheme, From, #state{sock=Sock, pending=Pending, msg_id=MsgId}=S
                                             msg_id=MsgId,
                                             op=get,
                                             caller=From} | Pending]}};
-
 handle_call(subscription, From, #state{sock=Sock, pending=Pending, msg_id=MsgId}=State) ->
-    SimpleXml =  {'create-subscription',?NETCONF_NOTIF_NAMESPACE_ATTR,
-                  [{stream,["NETCONF"]}]},
-    Bin = snc_utils:indent(to_xml_doc({rpc,
-                      [{'message-id',MsgId} | ?NETCONF_NAMESPACE_ATTR],
-                      [SimpleXml]})),
+
+    SimpleXml = snc_codec:rpc_create_subscription(MsgId),
+    Bin = snc_codec:to_pretty_xml_doc(SimpleXml),
     gen_tcp:send(Sock, Bin),
     {Ref,TRef} = set_request_timer(?DEFAULT_TIMEOUT),
     {reply, ok, State#state{msg_id=MsgId+1,
                           pending=[#pending{tref=TRef,
                                             ref=Ref,
                                             msg_id=MsgId,
-                                            op=get,
+                                            op=create_subscription,
                                             caller=From} | Pending]}};
+handle_call(show_state, _From, State) ->
+    {reply, State, State};
 handle_call(Request, _From, State) ->
     error_logger:info_msg("[~p: ~p] ~p~n", [?MODULE, ?LINE | [State]]),
     Reply = ok,
@@ -589,16 +584,15 @@ parse_attrs([]) ->
 
 %%%-----------------------------------------------------------------
 %%% Decoding of parsed XML data
-decode({Tag,Attrs,_}=E, #state{connection=Connection,pending=Pending}=State) ->
-    %ConnName = Connection#connection.name,
+decode({Tag,Attrs,_} = E, #state{pending = Pending} = State) ->
     case get_local_name_atom(Tag) of
         'rpc-reply' ->
             case get_msg_id(Attrs) of
                 undefined ->
-                    error_logger:error_msg("[~p: ~p] rpc_reply_missing_msg_id ~n", [?MODULE, ?LINE | []]),
+                    ?error([{rpc_reply_missing_msg_id, E}]),
                     {noreply,State};
                 MsgId ->
-                    decode_rpc_reply(MsgId,E,State)
+                    decode_rpc_reply(MsgId, E, State)
             end;
         hello ->
             case State#state.hello_status of
@@ -634,23 +628,7 @@ decode({Tag,Attrs,_}=E, #state{connection=Connection,pending=Pending}=State) ->
             error_logger:info_msg("[~p: ~p] Notification: ~p~n", [?MODULE, ?LINE | [E]]),
             {noreply,State};
         Other ->
-            %% Result of send/2, when not sending an rpc request - or
-            %% if netconf server sends noise. Can handle this only if
-            %% there is just one pending that matches (i.e. has
-            %% undefined msg_id and op)
-            %% case [P || P = #pending{msg_id=undefined,op=undefined} <- Pending] of
-            %%     [#pending{tref=TRef,ref=Ref,caller=Caller}] ->
-            %%         cancel_request_timer(Ref,TRef),
-            %%         ct_gen_conn:return(Caller,E),
-            %%         {noreply,State#state{pending=[]}};
-            %%     _ ->
-            %%         ?error(ConnName,[{got_unexpected_msg,Other},
-            %%                          {expecting,Pending}]),
-            %%         {noreply,State}
-            %% end
-
-            error_logger:error_msg("[~p: ~p] unexpected msg: ~p~n", [?MODULE, ?LINE | [Other]])
-
+            ?error([{got_unexpected_msg, Other}, {expecting, Pending}])
     end.
 
 get_msg_id(Attrs) ->
@@ -661,34 +639,18 @@ get_msg_id(Attrs) ->
             undefined
     end.
 
-decode_rpc_reply(MsgId,{_,Attrs,Content0}=E,#state{pending=Pending} = State) ->
+decode_rpc_reply(MsgId, {_, Attrs, Content0} = E, #state{pending = Pending} = State) ->
     case lists:keytake(MsgId,#pending.msg_id,Pending) of
-        {value, #pending{tref=TRef,ref=Ref,op=Op,caller=Caller}, Pending1} ->
+        {value, #pending{tref=TRef, ref=Ref, op=Op, caller=Caller}, Pending1} ->
             cancel_request_timer(Ref,TRef),
             Content = forward_xmlns_attr(Attrs,Content0),
-            {CallerReply,{ServerReply,State2}} =
-                do_decode_rpc_reply(Op,Content,State#state{pending=Pending1}),
-            ct_gen_conn:return(Caller,CallerReply),
+            {CallerReply, {ServerReply, State2}} =
+                do_decode_rpc_reply(Op, Content, State#state{pending=Pending1}),
+            snc_utils:return(Caller, CallerReply),
             {ServerReply,State2};
         false ->
-            %% Result of send/2, when receiving a correct
-            %% rpc-reply. Can handle this only if there is just one
-            %% pending that matches (i.e. has undefined msg_id and op)
-            case [P || P = #pending{msg_id=undefined,op=undefined} <- Pending] of
-                [#pending{tref=TRef,
-                          ref=Ref,
-                          msg_id=undefined,
-                          op=undefined,
-                          caller=Caller}] ->
-                    cancel_request_timer(Ref,TRef),
-                    ct_gen_conn:return(Caller,E),
-                    {noreply,State#state{pending=[]}};
-                _ ->
-                    ConnName = (State#state.connection)#connection.name,
-                    ?error(ConnName,[{got_unexpected_msg_id,MsgId},
-                                     {expecting,Pending}]),
-                    {noreply,State}
-            end
+            ?error([{got_unexpected_msg_id,MsgId}, {expecting,Pending}]),
+            {noreply,State}
     end.
 
 do_decode_rpc_reply(Op,Result,State)
@@ -703,12 +665,13 @@ do_decode_rpc_reply(close_session,Result,State) ->
         ok -> {ok,{stop,State}};
         Other -> {Other,{noreply,State}}
     end;
-do_decode_rpc_reply({create_subscription,Caller},Result,State) ->
+do_decode_rpc_reply(create_subscription, Result, State) ->
+    error_logger:info_msg("[~p: ~p] create_sub: ~p~n", [?MODULE, ?LINE | [Result]]),
     case decode_ok(Result) of
         ok ->
-            {ok,{noreply,State#state{event_receiver=Caller}}};
+            {ok, {noreply, State}};
         Other ->
-            {Other,{noreply,State}}
+            {Other, {noreply, State}}
     end;
 do_decode_rpc_reply(get_event_streams,Result,State) ->
     {decode_streams(decode_data(Result)),{noreply,State}};

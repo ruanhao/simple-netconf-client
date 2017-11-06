@@ -1,6 +1,6 @@
 -module(snc_utils).
 
--export([indent/1]).
+-export([indent/1, return/2]).
 
 
 %%%-----------------------------------------------------------------
@@ -137,3 +137,7 @@ get_tag([H|T]) ->
 get_tag([]) ->
     %% The line is not complete - will be continued later.
     [].
+
+return({To,Ref},Result) ->
+    To ! {Ref, Result},
+    ok.
