@@ -630,7 +630,8 @@ decode({Tag,Attrs,_}=E, #state{connection=Connection,pending=Pending}=State) ->
             end;
         notification ->
             EventReceiver = State#state.event_receiver,
-            EventReceiver ! E,
+            % EventReceiver ! E,
+            error_logger:info_msg("[~p: ~p] Notification: ~p~n", [?MODULE, ?LINE | [E]]),
             {noreply,State};
         Other ->
             %% Result of send/2, when not sending an rpc request - or
