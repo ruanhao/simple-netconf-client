@@ -1,5 +1,6 @@
 -module(snc_encoder).
--export([encode_rpc_operation/2]).
+-export([encode_rpc_operation/2,
+         encode_hello/1]).
 
 -include("snc_protocol.hrl").
 
@@ -11,6 +12,17 @@
         (?is_simple_xml(F) orelse (F==[]) orelse (is_list(F) andalso ?is_simple_xml(hd(F))))).
 -define(is_string(S),
         (is_list(S) andalso is_integer(hd(S)))).
+
+
+%%%-----------------------------------------------------------------
+encode_hello(Options) when is_list(Options) ->
+    UserCaps = [{capability, UserCap} ||
+                   {capability, UserCap} <- Options,
+                   is_list(hd(UserCap))],
+    {hello, ?NETCONF_NAMESPACE_ATTR,
+     [{capabilities,
+       [{capability,[?NETCONF_BASE_CAP++?NETCONF_BASE_CAP_VSN]}|
+        UserCaps]}]}.
 
 %%%-----------------------------------------------------------------
 encode_rpc_operation(Lock,[Target]) when Lock==lock; Lock==unlock ->

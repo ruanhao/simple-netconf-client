@@ -84,9 +84,11 @@ start_link() ->
 %% @end
 %%--------------------------------------------------------------------
 init([]) ->
-                                                % process_flag(trap_exit, true),
-    {ok, Sock} = gen_tcp:connect("10.74.68.81", 48443, [binary, {packet, 0}]),
-    {ok, #state{sock=Sock}, 0}.
+    %% process_flag(trap_exit, true),
+    Option = #options{host="10.74.68.81", port=48443},
+    {ok, Sock} = tcp_connect(Option),
+    timer:send_after(0, client_hello),
+    {ok, #state{sock=Sock}}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -112,14 +114,14 @@ handle_call(get_scheme, From, State) ->
     do_send_rpc(get, SimpleXml, From, State);
 handle_call(subscription, From, State) ->
     SimpleXml = snc_encoder:encode_rpc_operation(create_subscription,
-                                                [?DEFAULT_STREAM,
-                                                 undefined,
-                                                 undefined,
-                                                 undefined]),
+                                                 [?DEFAULT_STREAM,
+                                                  undefined,
+                                                  undefined,
+                                                  undefined]),
     do_send_rpc(create_subscription, SimpleXml, From, State);
 handle_call(show_state, _From, State) ->
     {reply, State, State};
-handle_call(Request, _From, State) ->
+handle_call(_Request, _From, State) ->
     Reply = ok,
     {reply, Reply, State}.
 
@@ -146,15 +148,41 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_info({tcp, Sock, Data}, State) ->
-    error_logger:info_msg("[~p: ~p] receive: ~p~n", [?MODULE, ?LINE | [Data]]),
+handle_info({tcp, _Sock, Data}, State) ->
+    ?INFO([{recv_data, Data}]),
     handle_data(Data, State);
-handle_info(timeout, #state{sock=Sock} = State) ->
-    error_logger:info_msg("[~p: ~p] sending client hello msg~n", [?MODULE, ?LINE | []]),
-    HelloSimpleXml = client_hello([{capability, ["urn:ietf:params:netconf:capability:exi:1.0"]}]),
+handle_info(client_hello, #state{sock=Sock, hello_status=HelloStatus} = State) ->
+    HelloSimpleXml = snc_encoder:encode_hello([{capability, ["urn:ietf:params:netconf:capability:exi:1.0"]}]),
     Bin = snc_utils:to_pretty_xml_doc(HelloSimpleXml),
-    gen_tcp:send(Sock, Bin),
-    {noreply, State};
+    case tcp_send(Sock, Bin) of
+        ok ->
+            case HelloStatus of
+                undefined ->
+                    Timeout = 5000,
+                    {Ref, TRef} = set_request_timer(Timeout),
+                    {noreply, State#state{hello_status=#pending{tref=TRef, ref=Ref}}};
+                received ->
+                    {reply, ok, State#state{hello_status=done}};
+                {error,Reason} ->
+                    {stop, {error,Reason}, State}
+            end;
+        Error ->
+            {stop, Error, State}
+    end;
+handle_info({Ref, timeout}, #state{hello_status=#pending{ref=Ref}} = State) ->
+    ?ERROR([{hello_session_failed, timeout}]),
+    {stop, State#state{hello_status={error, timeout}}};
+handle_info({Ref, timeout}, #state{pending=Pending} = State) ->
+    {value, #pending{op=Op, caller=Caller}, Pending1} =
+        lists:keytake(Ref, #pending.ref, Pending),
+    return(Caller, {error,timeout}),
+    R = case Op of
+	    close_session -> stop;
+	    _ -> noreply
+	end,
+    %% Halfhearted try to get in correct state, this matches
+    %% the implementation before this patch
+    {R, State#state{pending=Pending1, no_end_tag_buff= <<>>, buff= <<>>}};
 handle_info(Info, State) ->
     error_logger:info_msg("[~p: ~p] Info: ~p~n", [?MODULE, ?LINE | [Info]]),
     {noreply, State}.
@@ -196,30 +224,20 @@ code_change(_OldVsn, State, _Extra) ->
 
 %%%-----------------------------------------------------------------
 set_request_timer(infinity) ->
-    {undefined,undefined};
+    {undefined, undefined};
 set_request_timer(T) ->
     Ref = make_ref(),
-    {ok,TRef} = timer:send_after(T,{Ref,timeout}),
-    {Ref,TRef}.
+    {ok, TRef} = timer:send_after(T, {Ref,timeout}),
+    {Ref, TRef}.
 
 %%%-----------------------------------------------------------------
-cancel_request_timer(undefined,undefined) ->
+cancel_request_timer(undefined, undefined) ->
     ok;
-cancel_request_timer(Ref,TRef) ->
+cancel_request_timer(Ref, TRef) ->
     _ = timer:cancel(TRef),
     receive {Ref,timeout} -> ok
     after 0 -> ok
     end.
-
-%%%-----------------------------------------------------------------
-client_hello(Options) when is_list(Options) ->
-    UserCaps = [{capability, UserCap} ||
-                   {capability, UserCap} <- Options,
-                   is_list(hd(UserCap))],
-    {hello, ?NETCONF_NAMESPACE_ATTR,
-     [{capabilities,
-       [{capability,[?NETCONF_BASE_CAP++?NETCONF_BASE_CAP_VSN]}|
-        UserCaps]}]}.
 
 
 %%%-----------------------------------------------------------------
@@ -228,7 +246,7 @@ do_send_rpc(PendingOp, SimpleXml, Caller,
             #state{sock=Sock, msg_id=MsgId, pending=Pending} = State) ->
     case do_send_rpc(Sock, MsgId, SimpleXml) of
         ok ->
-            Timeout = 5000,
+            Timeout = 5000,                     % 5 seconds
             {Ref, TRef} = set_request_timer(Timeout),
             {noreply, State#state{msg_id=MsgId+1,
                                   pending=[#pending{tref=TRef,
@@ -248,8 +266,6 @@ do_send_rpc(Sock, MsgId, SimpleXml) ->
 do_send(Sock, SimpleXml) ->
     Xml = snc_utils:to_pretty_xml_doc(SimpleXml),
     tcp_send(Sock, Xml).
-
-
 
 %%%-----------------------------------------------------------------
 %%% Parse and handle received XML data
@@ -297,13 +313,6 @@ handle_data(NewData, State0) ->
     end.
 
 
-%% xml does not accept a leading nl and some netconf server add a nl after
-%% each ?END_TAG, ignore them
-remove_initial_nl(<<"\n", Data/binary>>) ->
-    remove_initial_nl(Data);
-remove_initial_nl(Data) ->
-    Data.
-
 handle_error(Reason, State) ->
     Pending1 = case State#state.pending of
                    [] -> [];
@@ -312,12 +321,19 @@ handle_error(Reason, State) ->
                        %% first answer
                        P=#pending{tref=TRef,ref=Ref,caller=Caller} =
                            lists:last(Pending),
-                       cancel_request_timer(Ref,TRef),
+                       cancel_request_timer(Ref, TRef),
                        Reason1 = {failed_to_parse_received_data,Reason},
-                       return(Caller,{error,Reason1}),
-                       lists:delete(P,Pending)
+                       return(Caller, {error,Reason1}),
+                       lists:delete(P, Pending)
                end,
     {noreply, State#state{pending=Pending1}}.
+
+%% xml does not accept a leading nl and some netconf server add a nl after
+%% each ?END_TAG, ignore them
+remove_initial_nl(<<"\n", Data/binary>>) ->
+    remove_initial_nl(Data);
+remove_initial_nl(Data) ->
+    Data.
 
 %% Event function for the sax parser. It builds a simple XML structure.
 %% Care is taken to keep namespace attributes and prefixes as in the original XML.
@@ -390,27 +406,24 @@ decode({Tag,Attrs,_} = E, #state{pending = Pending} = State) ->
                         {error,Reason} ->
                             {noreply,State#state{hello_status = {error,Reason}}}
                     end;
-                #pending{tref=TRef,ref=Ref,caller=Caller} ->
+                #pending{tref=TRef,ref=Ref} ->
                     cancel_request_timer(Ref,TRef),
                     case decode_hello(E) of
                         {ok,SessionId,Capabilities} ->
-                            return(Caller,ok),
                             {noreply,State#state{session_id = SessionId,
                                                  capabilities = Capabilities,
                                                  hello_status = done}};
                         {error,Reason} ->
-                            return(Caller,{error,Reason}),
                             {stop,State#state{hello_status={error,Reason}}}
                     end;
                 Other ->
-                    error_logger:error_msg("[~p: ~p] got_unexpected_hello: ~p, ~p, ~n",
-                                           [?MODULE, ?LINE | [E, Other]]),
+                    ?ERROR([{got_unexpected_hello, E, Other}]),
                     {noreply,State}
             end;
         notification ->
             EventReceiver = State#state.event_receiver,
-                                                % EventReceiver ! E,
-            error_logger:info_msg("[~p: ~p] Notification: ~p~n", [?MODULE, ?LINE | [E]]),
+            %% EventReceiver ! E,
+            ?INFO([{notification_received, E}]),
             {noreply,State};
         Other ->
             ?ERROR([{got_unexpected_msg, Other}, {expecting, Pending}])
@@ -461,8 +474,6 @@ do_decode_rpc_reply(get_event_streams,Result,State) ->
     {decode_streams(decode_data(Result)),{noreply,State}};
 do_decode_rpc_reply(undefined,Result,State) ->
     {Result,{noreply,State}}.
-
-
 
 decode_ok([{Tag,Attrs,Content}]) ->
     case get_local_name_atom(Tag) of
@@ -612,18 +623,17 @@ tcp_connect(#options{host=Host, timeout=Timeout, port=Port}) ->
             ?INFO([{tcp_connected, Host}]),
             {ok, Sock};
         {error, Reason} ->
-            ?ERROR([{could_not_connect_to_server, Host}]),
+            ?ERROR([{could_not_connect_to_server, Host},{reason, Reason}]),
             could_not_connect_to_server
     end.
 
 tcp_send(Socket, Data) ->
     case gen_tcp:send(Socket, Data) of
         ok ->
-            io:format("[~p:~p]<eruahao> hello~n", [?MODULE, ?LINE | []]),
             ?INFO([{tcp_send_data, Data}]),
             ok;
         {error, Reason} ->
-            ?ERROR({tcp_failed_to_send_data, Data}),
+            ?ERROR([{tcp_failed_to_send_data, Data}, {reason, Reason}]),
             tcp_failed_to_send_data
     end.
 
