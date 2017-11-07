@@ -10,11 +10,15 @@
 
 -define(SERVER, ?MODULE).
 
--define(ERROR(Report),
-        error_logger:error_report([{client, self()}, {module, ?MODULE}, {line, ?LINE} | Report])).
+-define(ERROR(Msg, Values),
+        error_logger:error_msg("[~p|~p|~p] " ++ Msg ++ "~n", [?MODULE, ?LINE, self() | Values])).
+-define(ERROR(Msg),
+        error_logger:error_msg("[~p|~p|~p] " ++ Msg ++ "~n", [?MODULE, ?LINE, self()])).
 
--define(INFO(Report),
-        error_logger:info_report([{client, self()}, {module, ?MODULE}, {line, ?LINE} | Report])).
+-define(INFO(Msg, Values),
+        error_logger:info_msg("[~p|~p|~p] " ++ Msg ++ "~n", [?MODULE, ?LINE, self() | Values])).
+-define(INFO(Msg),
+        error_logger:info_msg("[~p|~p|~p] " ++ Msg ++ "~n", [?MODULE, ?LINE, self()])).
 
 -behaviour(gen_server).
 
@@ -149,7 +153,7 @@ handle_cast(_Msg, State) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_info({tcp, _Sock, Data}, State) ->
-    ?INFO([{recv_data, Data}]),
+    ?INFO("recv_data: ~p", [Data]),
     handle_data(Data, State);
 handle_info(client_hello, #state{sock=Sock, hello_status=HelloStatus} = State) ->
     HelloSimpleXml = snc_encoder:encode_hello([{capability, ["urn:ietf:params:netconf:capability:exi:1.0"]}]),
@@ -170,7 +174,7 @@ handle_info(client_hello, #state{sock=Sock, hello_status=HelloStatus} = State) -
             {stop, Error, State}
     end;
 handle_info({Ref, timeout}, #state{hello_status=#pending{ref=Ref}} = State) ->
-    ?ERROR([{hello_session_failed, timeout}]),
+    ?ERROR("hello session failed due to timeout"),
     {stop, State#state{hello_status={error, timeout}}};
 handle_info({Ref, timeout}, #state{pending=Pending} = State) ->
     {value, #pending{op=Op, caller=Caller}, Pending1} =
@@ -390,7 +394,7 @@ decode({Tag,Attrs,_} = E, #state{pending = Pending} = State) ->
         'rpc-reply' ->
             case get_msg_id(Attrs) of
                 undefined ->
-                    ?ERROR([{rpc_reply_missing_msg_id, E}]),
+                    ?ERROR("rpc reply missing_msg id: ~p", [E]),
                     {noreply,State};
                 MsgId ->
                     decode_rpc_reply(MsgId, E, State)
@@ -417,16 +421,16 @@ decode({Tag,Attrs,_} = E, #state{pending = Pending} = State) ->
                             {stop,State#state{hello_status={error,Reason}}}
                     end;
                 Other ->
-                    ?ERROR([{got_unexpected_hello, E, Other}]),
+                    ?ERROR("got unexpected hello: ~p, ~p", [E, Other]),
                     {noreply,State}
             end;
         notification ->
             EventCallback = State#state.event_callback,
             EventCallback(E),
-            ?INFO([{notification_received, E}]),
+            ?INFO("notification received: ~p", [E]),
             {noreply,State};
         Other ->
-            ?ERROR([{got_unexpected_msg, Other}, {expecting, Pending}])
+            ?ERROR("got_unexpected_msg: ~p, expecting: ~p", [Other, Pending])
     end.
 
 get_msg_id(Attrs) ->
@@ -447,7 +451,7 @@ decode_rpc_reply(MsgId, {_, Attrs, Content0} = E, #state{pending = Pending} = St
             return(Caller, CallerReply),
             {ServerReply,State2};
         false ->
-            ?ERROR([{got_unexpected_msg_id,MsgId}, {expecting,Pending}, {data, E}]),
+            ?ERROR("got unexpected msg id: ~p, expecting: ~p, data: ~p", [MsgId, Pending, E]),
             {noreply,State}
     end.
 
@@ -583,10 +587,8 @@ decode_hello({hello,_Attrs,Hello}) ->
     end.
 
 decode_caps([{capability,[],[?NETCONF_BASE_CAP++Vsn=Cap]} |Caps], Acc, _) ->
-    error_logger:info_msg("[~p: ~p] Vsn: ~p~n", [?MODULE, ?LINE | [Vsn]]),
     case Vsn of
         V when V =:= ?NETCONF_BASE_CAP_VSN orelse V =:= ?NETCONF_BASE_CAP_VSN_1_1 ->
-            error_logger:info_msg("[~p: ~p] yes~n", [?MODULE, ?LINE | []]),
             decode_caps(Caps, [Cap|Acc], true);
         _ ->
             {error,{incompatible_base_capability_vsn,Vsn}}
@@ -620,20 +622,20 @@ decode_streams([]) ->
 tcp_connect(#options{host=Host, timeout=Timeout, port=Port}) ->
     case gen_tcp:connect(Host, Port, [binary, {packet, 0}], Timeout) of
         {ok, Sock} ->
-            ?INFO([{tcp_connected, Host}]),
+            ?INFO("tcp connected ~p", [Host]),
             {ok, Sock};
         {error, Reason} ->
-            ?ERROR([{could_not_connect_to_server, Host},{reason, Reason}]),
+            ?ERROR("could not connect to server ~p, reason: ~p", [Host, Reason]),
             could_not_connect_to_server
     end.
 
 tcp_send(Socket, Data) ->
     case gen_tcp:send(Socket, Data) of
         ok ->
-            ?INFO([{tcp_send_data, Data}]),
+            ?INFO("tcp send data: ~p", [Data]),
             ok;
         {error, Reason} ->
-            ?ERROR([{tcp_failed_to_send_data, Data}, {reason, Reason}]),
+            ?ERROR("tcp failed to send data ~p, reason: ~p", [Data, Reason]),
             tcp_failed_to_send_data
     end.
 

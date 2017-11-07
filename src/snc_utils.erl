@@ -2,6 +2,7 @@
 -include("snc_protocol.hrl").
 -include_lib("xmerl/include/xmerl.hrl").
 -export([to_xml_doc/1,
+         format_data/2,
          to_pretty_xml_doc/1]).
 
 
