@@ -41,7 +41,7 @@
           no_end_tag_buff = <<>>,
           buff = <<>>,
           pending = [],    % [#pending]
-          event_receiver}).% pid
+          event_callback = fun(_E) -> not_implemented_yet end}).
 
 
 %% Run-time client options.
@@ -421,8 +421,8 @@ decode({Tag,Attrs,_} = E, #state{pending = Pending} = State) ->
                     {noreply,State}
             end;
         notification ->
-            EventReceiver = State#state.event_receiver,
-            %% EventReceiver ! E,
+            EventCallback = State#state.event_callback,
+            EventCallback(E),
             ?INFO([{notification_received, E}]),
             {noreply,State};
         Other ->
@@ -438,7 +438,7 @@ get_msg_id(Attrs) ->
     end.
 
 decode_rpc_reply(MsgId, {_, Attrs, Content0} = E, #state{pending = Pending} = State) ->
-    case lists:keytake(MsgId,#pending.msg_id,Pending) of
+    case lists:keytake(MsgId, #pending.msg_id, Pending) of
         {value, #pending{tref=TRef, ref=Ref, op=Op, caller=Caller}, Pending1} ->
             cancel_request_timer(Ref,TRef),
             Content = forward_xmlns_attr(Attrs,Content0),
@@ -447,7 +447,7 @@ decode_rpc_reply(MsgId, {_, Attrs, Content0} = E, #state{pending = Pending} = St
             return(Caller, CallerReply),
             {ServerReply,State2};
         false ->
-            ?ERROR([{got_unexpected_msg_id,MsgId}, {expecting,Pending}]),
+            ?ERROR([{got_unexpected_msg_id,MsgId}, {expecting,Pending}, {data, E}]),
             {noreply,State}
     end.
 
