@@ -1,2 +1,9 @@
-# simple-netconf-client
-A simple netconf client using TCP
+snc
+=====
+
+An OTP application
+
+Build
+-----
+
+    $ rebar3 compile
