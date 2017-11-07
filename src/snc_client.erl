@@ -6,52 +6,15 @@
 %%% @end
 %%% Created :  5 Nov 2017 by Hao Ruan <ruanhao1116@google.com>
 %%%-------------------------------------------------------------------
--module(snc_prototype).
--compile(export_all).
-%% Default port number (RFC 4742/IANA).
--define(DEFAULT_PORT, 830).
+-module(snc_client).
 
-%% Default timeout to wait for netconf server to reply to a request
--define(DEFAULT_TIMEOUT, infinity). %% msec
-
-%% Namespaces
--define(NETCONF_NAMESPACE,"urn:ietf:params:xml:ns:netconf:base:1.0").
--define(NETCONF_NAMESPACE_ATTR,[{xmlns,?NETCONF_NAMESPACE}]).
--define(ACTION_NAMESPACE_ATTR,[{xmlns,?ACTION_NAMESPACE}]).
--define(NETCONF_NOTIF_NAMESPACE_ATTR,[{xmlns,?NETCONF_NOTIF_NAMESPACE}]).
--define(NETMOD_NOTIF_NAMESPACE_ATTR,[{xmlns,?NETMOD_NOTIF_NAMESPACE}]).
-
-
--define(ACTION_NAMESPACE,"urn:com:ericsson:ecim:1.0").
--define(NETCONF_NOTIF_NAMESPACE,
-        "urn:ietf:params:xml:ns:netconf:notification:1.0").
--define(NETMOD_NOTIF_NAMESPACE,"urn:ietf:params:xml:ns:netmod:notification").
-
-%% Capabilities
--define(NETCONF_BASE_CAP,"urn:ietf:params:netconf:base:").
--define(NETCONF_BASE_CAP_VSN,"1.0").
--define(NETCONF_BASE_CAP_VSN_1_1,"1.1").
-
-%% Misc
--define(END_TAG,<<"]]>]]>">>).
-
--define(FORMAT(_F, _A), lists:flatten(io_lib:format(_F, _A))).
-
+-define(SERVER, ?MODULE).
 
 -define(error(Report),
-        error_logger:error_report([{client,self()},
-                                   {module,?MODULE},
-                                   {line,?LINE} |
-                                   Report])).
+        error_logger:error_report([{client, self()}, {module, ?MODULE}, {line, ?LINE} | Report])).
 
--define(is_timeout(T), (is_integer(T) orelse T==infinity)).
--define(is_filter(F),
-        (?is_simple_xml(F)
-         orelse (F==[])
-         orelse (is_list(F) andalso ?is_simple_xml(hd(F))))).
--define(is_simple_xml(Xml),
-        (is_atom(Xml) orelse (is_tuple(Xml) andalso is_atom(element(1,Xml))))).
--define(is_string(S), (is_list(S) andalso is_integer(hd(S)))).
+-define(info(Report),
+        error_logger:info_report([{client, self()}, {module, ?MODULE}, {line, ?LINE} | Report])).
 
 -behaviour(gen_server).
 
@@ -62,25 +25,15 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
--define(SERVER, ?MODULE).
 
+-include("snc_protocol.hrl").
 -include_lib("xmerl/include/xmerl.hrl").
-
-%% Logging information for error handler
--record(conn_log, {header=true,
-                   client,
-                   name,
-                   address,
-                   conn_pid,
-                   action,
-                   module}).
 
 %% Client state
 -record(state, {
           sock,
           host,
           port,
-          connection,      % #connection
           capabilities,
           session_id,
           msg_id = 1,
@@ -92,19 +45,7 @@
 
 
 %% Run-time client options.
--record(options, {ssh = [], % Options for the ssh application
-                  host,
-                  port = ?DEFAULT_PORT,
-                  timeout = ?DEFAULT_TIMEOUT,
-                  name,
-                  type}).
-
-%% Connection reference
--record(connection, {reference, % {CM,Ch}
-                     host,
-                     port,
-                     name,
-                     type}).
+-record(options, {host, port=8443, timeout=5000}).
 
 %% Pending replies from server
 -record(pending, {tref,    % timer ref (returned from timer:xxx)
@@ -143,8 +84,7 @@ start_link() ->
 %% @end
 %%--------------------------------------------------------------------
 init([]) ->
-    process_flag(trap_exit, true),
-
+                                                % process_flag(trap_exit, true),
     {ok, Sock} = gen_tcp:connect("10.74.68.81", 48443, [binary, {packet, 0}]),
     {ok, #state{sock=Sock}, 0}.
 
@@ -182,11 +122,11 @@ handle_call(subscription, From, #state{sock=Sock, pending=Pending, msg_id=MsgId}
     gen_tcp:send(Sock, Bin),
     {Ref,TRef} = set_request_timer(?DEFAULT_TIMEOUT),
     {reply, ok, State#state{msg_id=MsgId+1,
-                          pending=[#pending{tref=TRef,
-                                            ref=Ref,
-                                            msg_id=MsgId,
-                                            op=create_subscription,
-                                            caller=From} | Pending]}};
+                            pending=[#pending{tref=TRef,
+                                              ref=Ref,
+                                              msg_id=MsgId,
+                                              op=create_subscription,
+                                              caller=From} | Pending]}};
 handle_call(show_state, _From, State) ->
     {reply, State, State};
 handle_call(Request, _From, State) ->
@@ -222,17 +162,13 @@ handle_info({tcp, Sock, Data}, State) ->
     handle_data(Data, State);
 handle_info(timeout, #state{sock=Sock} = State) ->
     error_logger:info_msg("[~p: ~p] sending client hello msg~n", [?MODULE, ?LINE | []]),
-    HelloSimpleXml = client_hello([%{capability, [?NETCONF_BASE_CAP ++ ?NETCONF_BASE_CAP_VSN_1_1]},
-                                   {capability, ["urn:ietf:params:netconf:capability:exi:1.0"]}]),
-    Bin = snc_utils:indent(to_xml_doc(HelloSimpleXml)),
+    HelloSimpleXml = client_hello([{capability, ["urn:ietf:params:netconf:capability:exi:1.0"]}]),
+    Bin = snc_codec:to_pretty_xml_doc(HelloSimpleXml),
     gen_tcp:send(Sock, Bin),
     {noreply, State};
 handle_info(Info, State) ->
     error_logger:info_msg("[~p: ~p] Info: ~p~n", [?MODULE, ?LINE | [Info]]),
     {noreply, State}.
-
-
-%    {noreply, State}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -267,87 +203,6 @@ code_change(_OldVsn, State, _Extra) ->
 %%----------------------------------------------------------------------
 %% Internal functions
 %%----------------------------------------------------------------------
-call(Client, Msg) ->
-    call(Client, Msg, infinity, false).
-call(Client, Msg, Timeout) when is_integer(Timeout); Timeout==infinity ->
-    call(Client, Msg, Timeout, false);
-call(Client, Msg, WaitStop) when is_boolean(WaitStop) ->
-    call(Client, Msg, infinity, WaitStop).
-call(Client, Msg, Timeout, WaitStop) ->
-    case get_handle(Client) of
-        {ok,Pid} ->
-            case ct_gen_conn:call(Pid,Msg,Timeout) of
-                {error,{process_down,Pid,noproc}} ->
-                    {error,no_such_client};
-                {error,{process_down,Pid,normal}} when WaitStop ->
-                    %% This will happen when server closes connection
-                    %% before client received rpc-reply on
-                    %% close-session.
-                    ok;
-                {error,{process_down,Pid,normal}} ->
-                    {error,closed};
-                {error,{process_down,Pid,Reason}} ->
-                    {error,{closed,Reason}};
-                Other when WaitStop ->
-                    MRef = erlang:monitor(process,Pid),
-                    receive
-                        {'DOWN',MRef,process,Pid,Normal} when Normal==normal;
-                                                              Normal==noproc ->
-                            Other;
-                        {'DOWN',MRef,process,Pid,Reason} ->
-                            {error,{{closed,Reason},Other}}
-                    after Timeout ->
-                            erlang:demonitor(MRef, [flush]),
-                            {error,{timeout,Other}}
-                    end;
-                Other ->
-                    Other
-            end;
-        Error ->
-            Error
-    end.
-
-get_handle(Client) when is_pid(Client) ->
-    {ok,Client};
-get_handle(Client) ->
-    case ct_util:get_connection(Client, ?MODULE) of
-        {ok,{Pid,_}} ->
-            {ok,Pid};
-        {error,no_registered_connection} ->
-            {error,{no_connection_found,Client}};
-        Error ->
-            Error
-    end.
-
-check_options(OptList,Options) ->
-    check_options(OptList,undefined,undefined,Options).
-
-check_options([], undefined, _Port, _Options) ->
-    {error, no_host_address};
-check_options([], _Host, undefined, _Options) ->
-    {error, no_port};
-check_options([], Host, Port, Options) ->
-    {Host,Port,Options};
-check_options([{ssh, Host}|T], _, Port, Options) ->
-    check_options(T, Host, Port, Options#options{host=Host});
-check_options([{port,Port}|T], Host, _, Options) ->
-    check_options(T, Host, Port, Options#options{port=Port});
-check_options([{timeout, Timeout}|T], Host, Port, Options)
-  when is_integer(Timeout); Timeout==infinity ->
-    check_options(T, Host, Port, Options#options{timeout = Timeout});
-check_options([{timeout, _} = Opt|_T], _Host, _Port, _Options) ->
-    {error, {invalid_option, Opt}};
-check_options([Opt|T], Host, Port, #options{ssh=SshOpts}=Options) ->
-    %% Option verified by ssh
-    check_options(T, Host, Port, Options#options{ssh=[Opt|SshOpts]}).
-
-check_session_options([],Options) ->
-    {ok,Options};
-check_session_options([{timeout, Timeout}|T], Options)
-  when is_integer(Timeout); Timeout==infinity ->
-    check_session_options(T, Options#options{timeout = Timeout});
-check_session_options([Opt|_T], _Options) ->
-    {error, {invalid_option, Opt}}.
 
 
 %%%-----------------------------------------------------------------
@@ -377,65 +232,14 @@ client_hello(Options) when is_list(Options) ->
        [{capability,[?NETCONF_BASE_CAP++?NETCONF_BASE_CAP_VSN]}|
         UserCaps]}]}.
 
-%%%-----------------------------------------------------------------
-
-encode_rpc_operation(Lock,[Target]) when Lock==lock; Lock==unlock ->
-    {Lock,[{target,[Target]}]};
-encode_rpc_operation(get,[Filter]) ->
-    {get,filter(Filter)};
-encode_rpc_operation(get_config,[Source,Filter]) ->
-    {'get-config',[{source,[Source]}] ++ filter(Filter)};
-encode_rpc_operation(edit_config,[Target,Config,OptParams]) ->
-    {'edit-config',[{target,[Target]}] ++ OptParams ++ [{config,[Config]}]};
-encode_rpc_operation(delete_config,[Target]) ->
-    {'delete-config',[{target,[Target]}]};
-encode_rpc_operation(copy_config,[Target,Source]) ->
-    {'copy-config',[{target,[Target]},{source,[Source]}]};
-encode_rpc_operation(action,[Action]) ->
-    {action,?ACTION_NAMESPACE_ATTR,[{data,[Action]}]};
-encode_rpc_operation(kill_session,[SessionId]) ->
-    {'kill-session',[{'session-id',[integer_to_list(SessionId)]}]};
-encode_rpc_operation(close_session,[]) ->
-    'close-session';
-encode_rpc_operation({create_subscription,_},
-                     [Stream,Filter,StartTime,StopTime]) ->
-    {'create-subscription',?NETCONF_NOTIF_NAMESPACE_ATTR,
-     [{stream,[Stream]}] ++
-         filter(Filter) ++
-         maybe_element(startTime,StartTime) ++
-         maybe_element(stopTime,StopTime)}.
-
-%% filter(undefined) ->
-%%     [];
-%% filter({xpath,Filter}) when ?is_string(Filter) ->
-%%     [{filter,[{type,"xpath"},{select, Filter}],[]}];
-%% filter(Filter) when is_list(Filter) ->
-%%     [{filter,[{'xmlns:ns0', "urn:ietf:params:xml:ns:netconf:base:1.0"},
-%%               {'ns0:type',"subtree"}],Filter}];
-%% filter(Filter) ->
-%%     filter([Filter]).
-
-filter(undefined) ->
-    [];
-filter({xpath,Filter}) when ?is_string(Filter) ->
-    [{filter,[{type,"xpath"},{select, Filter}],[]}];
-filter(Filter) when is_list(Filter) ->
-    [{filter,[{type,"subtree"}],Filter}];
-filter(Filter) ->
-    filter([Filter]).
-
-maybe_element(_,undefined) ->
-    [];
-maybe_element(Tag,Value) ->
-    [{Tag,[Value]}].
 
 %%%-----------------------------------------------------------------
 %%% Send XML data to server
-do_send_rpc(PendingOp,SimpleXml,Timeout,Caller,
-            #state{connection=Connection,msg_id=MsgId,pending=Pending} = State) ->
-    case do_send_rpc(Connection, MsgId, SimpleXml) of
+do_send_rpc(PendingOp, SimpleXml, Timeout, Caller,
+            #state{sock=Sock, msg_id=MsgId, pending=Pending} = State) ->
+    case do_send_rpc(Sock, MsgId, SimpleXml) of
         ok ->
-            {Ref,TRef} = set_request_timer(Timeout),
+            {Ref, TRef} = set_request_timer(Timeout),
             {noreply, State#state{msg_id=MsgId+1,
                                   pending=[#pending{tref=TRef,
                                                     ref=Ref,
@@ -446,24 +250,16 @@ do_send_rpc(PendingOp,SimpleXml,Timeout,Caller,
             {reply, Error, State#state{msg_id=MsgId+1}}
     end.
 
-do_send_rpc(Connection, MsgId, SimpleXml) ->
-    do_send(Connection,
-            {rpc,
-             [{'message-id',MsgId} | ?NETCONF_NAMESPACE_ATTR],
-             [SimpleXml]}).
+do_send_rpc(Sock, MsgId, SimpleXml) ->
+    do_send(Sock, {rpc,
+                   [{'message-id', MsgId} | ?NETCONF_NAMESPACE_ATTR],
+                   [SimpleXml]}).
 
-do_send(Connection, SimpleXml) ->
-    Xml=to_xml_doc(SimpleXml),
-    ssh_send(Connection, Xml).
+do_send(Sock, SimpleXml) ->
+    Xml = snc_codec:to_xml_doc(SimpleXml),
+    tcp_send(Sock, Xml).
 
-to_xml_doc(Simple) ->
-    Prolog = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
-    Xml = unicode:characters_to_binary(
-            xmerl:export_simple([Simple],
-                                xmerl_xml,
-                                [#xmlAttribute{name=prolog,
-                                               value=Prolog}])),
-    <<Xml/binary,?END_TAG/binary>>.
+
 
 %%%-----------------------------------------------------------------
 %%% Parse and handle received XML data
@@ -489,7 +285,6 @@ handle_data(NewData, State0) ->
                            end,
             <<NoEndTag1:NoEndTagSize/binary,Buff/binary>> = Data,
             NoEndTag = <<NoEndTag0/binary,NoEndTag1/binary>>,
-            error_logger:info_msg("[~p: ~p] noreply~n", [?MODULE, ?LINE | []]),
             {noreply, State0#state{no_end_tag_buff=NoEndTag, buff=Buff}};
         [FirstMsg0,Buff1] ->
             FirstMsg = remove_initial_nl(<<NoEndTag0/binary,FirstMsg0/binary>>),
@@ -624,7 +419,7 @@ decode({Tag,Attrs,_} = E, #state{pending = Pending} = State) ->
             end;
         notification ->
             EventReceiver = State#state.event_receiver,
-            % EventReceiver ! E,
+                                                % EventReceiver ! E,
             error_logger:info_msg("[~p: ~p] Notification: ~p~n", [?MODULE, ?LINE | [E]]),
             {noreply,State};
         Other ->
@@ -666,7 +461,6 @@ do_decode_rpc_reply(close_session,Result,State) ->
         Other -> {Other,{noreply,State}}
     end;
 do_decode_rpc_reply(create_subscription, Result, State) ->
-    error_logger:info_msg("[~p: ~p] create_sub: ~p~n", [?MODULE, ?LINE | [Result]]),
     case decode_ok(Result) of
         ok ->
             {ok, {noreply, State}};
@@ -820,117 +614,28 @@ decode_streams([{stream,_,Stream} | Streams]) ->
 decode_streams([]) ->
     [].
 
-
 %%%-----------------------------------------------------------------
-%%% Logging
-
-log(Connection,Action) ->
-    log(Connection,Action,<<>>).
-log(#connection{reference=Ref,host=Host,port=Port,name=Name},Action,Data) ->
-    Address =
-        case Ref of
-            {_,Ch} -> {Host,Port,Ch};
-            _ -> {Host,Port}
-        end,
-    error_logger:info_report(#conn_log{client=self(),
-                                       address=Address,
-                                       name=Name,
-                                       action=Action,
-                                       module=?MODULE},
-                             Data).
-
-
-%%%-----------------------------------------------------------------
-%%% SSH stuff
-ssh_connect(#options{host=Host,timeout=Timeout,port=Port,
-                     ssh=SshOpts,name=Name,type=Type}) ->
-    case ssh:connect(Host, Port,
-                     [{user_interaction,false},
-                      {silently_accept_hosts, true}|SshOpts],
-                     Timeout) of
-        {ok,CM} ->
-            Connection = #connection{reference = CM,
-                                     host = Host,
-                                     port = Port,
-                                     name = Name,
-                                     type = Type},
-            log(Connection,connect),
-            {ok,Connection};
-        {error,Reason} ->
-            {error,{ssh,could_not_connect_to_server,Reason}}
-    end.
-
-ssh_channel(#connection{reference=CM}=Connection0,
-            #options{timeout=Timeout,name=Name,type=Type}) ->
-    case ssh_connection:session_channel(CM, Timeout) of
-        {ok,Ch} ->
-            case ssh_connection:subsystem(CM, Ch, "netconf", Timeout) of
-                success ->
-                    Connection = Connection0#connection{reference = {CM,Ch},
-                                                        name = Name,
-                                                        type = Type},
-                    log(Connection,open),
-                    {ok, Connection};
-                failure ->
-                    ssh_connection:close(CM,Ch),
-                    {error,{ssh,could_not_execute_netconf_subsystem}};
-                {error,timeout} ->
-                    ssh_connection:close(CM,Ch),
-                    {error,{ssh,could_not_execute_netconf_subsystem,timeout}}
-            end;
+%%% transportation stuff
+tcp_connect(#options{host=Host, timeout=Timeout, port=Port}) ->
+    case gen_tcp:connect(Host, Port, [binary, {packet, 0}], Timeout) of
+        {ok, Sock} ->
+            ?info([{tcp_connected, Host}]),
+            {ok, Sock};
         {error, Reason} ->
-            {error,{ssh,could_not_open_channel,Reason}}
+            ?error([{could_not_connect_to_server, Host}]),
+            could_not_connect_to_server
     end.
 
-
-ssh_open(Options) ->
-    case ssh_connect(Options) of
-        {ok,Connection} ->
-            case ssh_channel(Connection,Options) of
-                {ok,_} = Ok ->
-                    Ok;
-                Error ->
-                    ssh_close(Connection),
-                    Error
-            end;
-        Error ->
-            Error
-    end.
-
-ssh_send(#connection{reference = {CM,Ch}}=Connection, Data) ->
-    case ssh_connection:send(CM, Ch, Data) of
+tcp_send(Socket, Data) ->
+    case gen_tcp:send(Socket, Data) of
         ok ->
-            log(Connection,send,Data),
+            ?info({tcp_send_data, Data}),
             ok;
-        {error,Reason} ->
-            {error,{ssh,failed_to_send_data,Reason}}
+        {error, Reason} ->
+            ?error({tcp_failed_to_send_data, Data}),
+            tcp_failed_to_send_data
     end.
-
-ssh_close(Connection=#connection{reference = {CM,Ch}, type = Type}) ->
-    _ = ssh_connection:close(CM,Ch),
-    log(Connection,close),
-    case Type of
-        connection_and_channel ->
-            ssh_close(Connection#connection{reference = CM});
-        _ ->
-            ok
-    end,
-    ok;
-ssh_close(Connection=#connection{reference = CM}) ->
-    _ = ssh:close(CM),
-    log(Connection,disconnect),
-    ok.
-
 
 %%----------------------------------------------------------------------
 %% END OF MODULE
 %%----------------------------------------------------------------------
-test() ->
-    Filter = [{netconf_state, [{xmlns, "urn:ietf:params:xml:ns:yang:ietf-netconf-monitoring"}],[{schemas, []}]}],
-    MsgId = 1,
-    SimpleXml = encode_rpc_operation(get, [Filter]),
-    Bin = snc_utils:indent(to_xml_doc({rpc,
-                      [{'message-id',MsgId} | ?NETCONF_NAMESPACE_ATTR],
-                                       [SimpleXml]})),
-
-    Bin.
