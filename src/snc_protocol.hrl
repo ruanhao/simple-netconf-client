@@ -28,3 +28,6 @@
 
 %% END_TAG
 -define(END_TAG,<<"]]>]]>">>).
+
+%% Notification
+-define(DEFAULT_STREAM, "NETCONF").

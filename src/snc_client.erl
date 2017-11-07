@@ -10,10 +10,10 @@
 
 -define(SERVER, ?MODULE).
 
--define(error(Report),
+-define(ERROR(Report),
         error_logger:error_report([{client, self()}, {module, ?MODULE}, {line, ?LINE} | Report])).
 
--define(info(Report),
+-define(INFO(Report),
         error_logger:info_report([{client, self()}, {module, ?MODULE}, {line, ?LINE} | Report])).
 
 -behaviour(gen_server).
@@ -102,35 +102,24 @@ init([]) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_call(get_scheme, From, #state{sock=Sock, pending=Pending, msg_id=MsgId}=State) ->
+handle_call({get, SimpleXml}, From, State) ->
+    do_send_rpc(get, SimpleXml, From, State);
+handle_call({create_subscription, SimpleXml}, From, State) ->
+    do_send_rpc(create_subscription, SimpleXml, From, State);
+handle_call(get_scheme, From, State) ->
     Filter = [{'netconf-state', [],[{schemas, []}]}],
-    SimpleXml = snc_codec:rpc_get(MsgId, Filter),
-    Bin = snc_codec:to_pretty_xml_doc(SimpleXml),
-    error_logger:info_msg("[~p: ~p] Bin: ~p~n", [?MODULE, ?LINE | [Bin]]),
-    gen_tcp:send(Sock, Bin),
-    {Ref,TRef} = set_request_timer(?DEFAULT_TIMEOUT),
-    {noreply, State#state{msg_id=MsgId+1,
-                          pending=[#pending{tref=TRef,
-                                            ref=Ref,
-                                            msg_id=MsgId,
-                                            op=get,
-                                            caller=From} | Pending]}};
-handle_call(subscription, From, #state{sock=Sock, pending=Pending, msg_id=MsgId}=State) ->
-
-    SimpleXml = snc_codec:rpc_create_subscription(MsgId),
-    Bin = snc_codec:to_pretty_xml_doc(SimpleXml),
-    gen_tcp:send(Sock, Bin),
-    {Ref,TRef} = set_request_timer(?DEFAULT_TIMEOUT),
-    {reply, ok, State#state{msg_id=MsgId+1,
-                            pending=[#pending{tref=TRef,
-                                              ref=Ref,
-                                              msg_id=MsgId,
-                                              op=create_subscription,
-                                              caller=From} | Pending]}};
+    SimpleXml = snc_encoder:encode_rpc_operation(get, [Filter]),
+    do_send_rpc(get, SimpleXml, From, State);
+handle_call(subscription, From, State) ->
+    SimpleXml = snc_encoder:encode_rpc_operation(create_subscription,
+                                                [?DEFAULT_STREAM,
+                                                 undefined,
+                                                 undefined,
+                                                 undefined]),
+    do_send_rpc(create_subscription, SimpleXml, From, State);
 handle_call(show_state, _From, State) ->
     {reply, State, State};
 handle_call(Request, _From, State) ->
-    error_logger:info_msg("[~p: ~p] ~p~n", [?MODULE, ?LINE | [State]]),
     Reply = ok,
     {reply, Reply, State}.
 
@@ -163,7 +152,7 @@ handle_info({tcp, Sock, Data}, State) ->
 handle_info(timeout, #state{sock=Sock} = State) ->
     error_logger:info_msg("[~p: ~p] sending client hello msg~n", [?MODULE, ?LINE | []]),
     HelloSimpleXml = client_hello([{capability, ["urn:ietf:params:netconf:capability:exi:1.0"]}]),
-    Bin = snc_codec:to_pretty_xml_doc(HelloSimpleXml),
+    Bin = snc_utils:to_pretty_xml_doc(HelloSimpleXml),
     gen_tcp:send(Sock, Bin),
     {noreply, State};
 handle_info(Info, State) ->
@@ -235,10 +224,11 @@ client_hello(Options) when is_list(Options) ->
 
 %%%-----------------------------------------------------------------
 %%% Send XML data to server
-do_send_rpc(PendingOp, SimpleXml, Timeout, Caller,
+do_send_rpc(PendingOp, SimpleXml, Caller,
             #state{sock=Sock, msg_id=MsgId, pending=Pending} = State) ->
     case do_send_rpc(Sock, MsgId, SimpleXml) of
         ok ->
+            Timeout = 5000,
             {Ref, TRef} = set_request_timer(Timeout),
             {noreply, State#state{msg_id=MsgId+1,
                                   pending=[#pending{tref=TRef,
@@ -256,7 +246,7 @@ do_send_rpc(Sock, MsgId, SimpleXml) ->
                    [SimpleXml]}).
 
 do_send(Sock, SimpleXml) ->
-    Xml = snc_codec:to_xml_doc(SimpleXml),
+    Xml = snc_utils:to_pretty_xml_doc(SimpleXml),
     tcp_send(Sock, Xml).
 
 
@@ -324,7 +314,7 @@ handle_error(Reason, State) ->
                            lists:last(Pending),
                        cancel_request_timer(Ref,TRef),
                        Reason1 = {failed_to_parse_received_data,Reason},
-                       ct_gen_conn:return(Caller,{error,Reason1}),
+                       return(Caller,{error,Reason1}),
                        lists:delete(P,Pending)
                end,
     {noreply, State#state{pending=Pending1}}.
@@ -384,7 +374,7 @@ decode({Tag,Attrs,_} = E, #state{pending = Pending} = State) ->
         'rpc-reply' ->
             case get_msg_id(Attrs) of
                 undefined ->
-                    ?error([{rpc_reply_missing_msg_id, E}]),
+                    ?ERROR([{rpc_reply_missing_msg_id, E}]),
                     {noreply,State};
                 MsgId ->
                     decode_rpc_reply(MsgId, E, State)
@@ -404,12 +394,12 @@ decode({Tag,Attrs,_} = E, #state{pending = Pending} = State) ->
                     cancel_request_timer(Ref,TRef),
                     case decode_hello(E) of
                         {ok,SessionId,Capabilities} ->
-                            ct_gen_conn:return(Caller,ok),
+                            return(Caller,ok),
                             {noreply,State#state{session_id = SessionId,
                                                  capabilities = Capabilities,
                                                  hello_status = done}};
                         {error,Reason} ->
-                            ct_gen_conn:return(Caller,{error,Reason}),
+                            return(Caller,{error,Reason}),
                             {stop,State#state{hello_status={error,Reason}}}
                     end;
                 Other ->
@@ -423,7 +413,7 @@ decode({Tag,Attrs,_} = E, #state{pending = Pending} = State) ->
             error_logger:info_msg("[~p: ~p] Notification: ~p~n", [?MODULE, ?LINE | [E]]),
             {noreply,State};
         Other ->
-            ?error([{got_unexpected_msg, Other}, {expecting, Pending}])
+            ?ERROR([{got_unexpected_msg, Other}, {expecting, Pending}])
     end.
 
 get_msg_id(Attrs) ->
@@ -441,10 +431,10 @@ decode_rpc_reply(MsgId, {_, Attrs, Content0} = E, #state{pending = Pending} = St
             Content = forward_xmlns_attr(Attrs,Content0),
             {CallerReply, {ServerReply, State2}} =
                 do_decode_rpc_reply(Op, Content, State#state{pending=Pending1}),
-            snc_utils:return(Caller, CallerReply),
+            return(Caller, CallerReply),
             {ServerReply,State2};
         false ->
-            ?error([{got_unexpected_msg_id,MsgId}, {expecting,Pending}]),
+            ?ERROR([{got_unexpected_msg_id,MsgId}, {expecting,Pending}]),
             {noreply,State}
     end.
 
@@ -619,23 +609,27 @@ decode_streams([]) ->
 tcp_connect(#options{host=Host, timeout=Timeout, port=Port}) ->
     case gen_tcp:connect(Host, Port, [binary, {packet, 0}], Timeout) of
         {ok, Sock} ->
-            ?info([{tcp_connected, Host}]),
+            ?INFO([{tcp_connected, Host}]),
             {ok, Sock};
         {error, Reason} ->
-            ?error([{could_not_connect_to_server, Host}]),
+            ?ERROR([{could_not_connect_to_server, Host}]),
             could_not_connect_to_server
     end.
 
 tcp_send(Socket, Data) ->
     case gen_tcp:send(Socket, Data) of
         ok ->
-            ?info({tcp_send_data, Data}),
+            io:format("[~p:~p]<eruahao> hello~n", [?MODULE, ?LINE | []]),
+            ?INFO([{tcp_send_data, Data}]),
             ok;
         {error, Reason} ->
-            ?error({tcp_failed_to_send_data, Data}),
+            ?ERROR({tcp_failed_to_send_data, Data}),
             tcp_failed_to_send_data
     end.
 
+return({To,Ref},Result) ->
+    To ! {Ref, Result},
+    ok.
 %%----------------------------------------------------------------------
 %% END OF MODULE
 %%----------------------------------------------------------------------

@@ -1,6 +1,8 @@
 -module(snc_utils).
-
--export([indent/1, return/2]).
+-include("snc_protocol.hrl").
+-include_lib("xmerl/include/xmerl.hrl").
+-export([to_xml_doc/1,
+         to_pretty_xml_doc/1]).
 
 
 %%%-----------------------------------------------------------------
@@ -138,6 +140,14 @@ get_tag([]) ->
     %% The line is not complete - will be continued later.
     [].
 
-return({To,Ref},Result) ->
-    To ! {Ref, Result},
-    ok.
+to_xml_doc(SimpleXml) ->
+    Prolog = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+    Xml = unicode:characters_to_binary(
+            xmerl:export_simple([SimpleXml],
+                                xmerl_xml,
+                                [#xmlAttribute{name=prolog,
+                                               value=Prolog}])),
+    <<Xml/binary,?END_TAG/binary>>.
+
+to_pretty_xml_doc(SimpleXml) ->
+    indent(to_xml_doc(SimpleXml)).
