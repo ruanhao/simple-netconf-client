@@ -298,7 +298,7 @@ handle_data(NewData, State0) ->
             {noreply, State0#state{no_end_tag_buff=NoEndTag, buff=Buff}};
         [FirstMsg0,Buff1] ->
             FirstMsg = remove_initial_nl(<<NoEndTag0/binary,FirstMsg0/binary>>),
-            SaxArgs = [{event_fun,fun sax_event/3}, {event_state,[]}],
+            SaxArgs = [{event_fun,fun snc_decoder:sax_event/3}, {event_state,[]}],
             case xmerl_sax_parser:stream(FirstMsg, SaxArgs) of
                 {ok, Simple, _Thrash} ->
                     case decode(Simple, State0#state{no_end_tag_buff= <<>>,
@@ -339,58 +339,11 @@ remove_initial_nl(<<"\n", Data/binary>>) ->
 remove_initial_nl(Data) ->
     Data.
 
-%% Event function for the sax parser. It builds a simple XML structure.
-%% Care is taken to keep namespace attributes and prefixes as in the original XML.
-sax_event(Event,_Loc,State) ->
-    sax_event(Event,State).
-
-sax_event({startPrefixMapping, Prefix, Uri},Acc) ->
-    %% startPrefixMapping will always come immediately before the
-    %% startElement where the namespace is defined.
-    [{xmlns,{Prefix,Uri}}|Acc];
-sax_event({startElement,_Uri,_Name,QN,Attrs},Acc) ->
-    %% Pick out any namespace attributes inserted due to a
-    %% startPrefixMapping event.The rest of Acc will then be only
-    %% elements.
-    {NsAttrs,NewAcc} = split_attrs_and_elements(Acc,[]),
-    Tag = qn_to_tag(QN),
-    [{Tag,NsAttrs ++ parse_attrs(Attrs),[]}|NewAcc];
-sax_event({endElement,_Uri,_Name,_QN},[{Name,Attrs,Cont},{Parent,PA,PC}|Acc]) ->
-    [{Parent,PA,[{Name,Attrs,lists:reverse(Cont)}|PC]}|Acc];
-sax_event(endDocument,[{Tag,Attrs,Cont}]) ->
-    {Tag,Attrs,lists:reverse(Cont)};
-sax_event({characters,String},[{Name,Attrs,Cont}|Acc]) ->
-    [{Name,Attrs,[String|Cont]}|Acc];
-sax_event(_Event,State) ->
-    State.
-
-split_attrs_and_elements([{xmlns,{Prefix,Uri}}|Rest],Attrs) ->
-    split_attrs_and_elements(Rest,[{xmlnstag(Prefix),Uri}|Attrs]);
-split_attrs_and_elements(Elements,Attrs) ->
-    {Attrs,Elements}.
-
-xmlnstag([]) ->
-    xmlns;
-xmlnstag(Prefix) ->
-    list_to_atom("xmlns:"++Prefix).
-
-qn_to_tag({[],Name}) ->
-    list_to_atom(Name);
-qn_to_tag({Prefix,Name}) ->
-    list_to_atom(Prefix ++ ":" ++ Name).
-
-parse_attrs([{_Uri, [], Name, Value}|Attrs]) ->
-    [{list_to_atom(Name),Value}|parse_attrs(Attrs)];
-parse_attrs([{_Uri, Prefix, Name, Value}|Attrs]) ->
-    [{list_to_atom(Prefix ++ ":" ++ Name),Value}|parse_attrs(Attrs)];
-parse_attrs([]) ->
-    [].
-
 
 %%%-----------------------------------------------------------------
 %%% Decoding of parsed XML data
 decode({Tag,Attrs,_} = E, #state{pending = Pending} = State) ->
-    case get_local_name_atom(Tag) of
+    case snc_decoder:get_local_name_atom(Tag) of
         'rpc-reply' ->
             case get_msg_id(Attrs) of
                 undefined ->
@@ -445,7 +398,7 @@ decode_rpc_reply(MsgId, {_, Attrs, Content0} = E, #state{pending = Pending} = St
     case lists:keytake(MsgId, #pending.msg_id, Pending) of
         {value, #pending{tref=TRef, ref=Ref, op=Op, caller=Caller}, Pending1} ->
             cancel_request_timer(Ref,TRef),
-            Content = forward_xmlns_attr(Attrs,Content0),
+            Content = snc_decoder:forward_xmlns_attr(Attrs,Content0),
             {CallerReply, {ServerReply, State2}} =
                 do_decode_rpc_reply(Op, Content, State#state{pending=Pending1}),
             return(Caller, CallerReply),
@@ -458,113 +411,26 @@ decode_rpc_reply(MsgId, {_, Attrs, Content0} = E, #state{pending = Pending} = St
 do_decode_rpc_reply(Op,Result,State)
   when Op==lock; Op==unlock; Op==edit_config; Op==delete_config;
        Op==copy_config; Op==kill_session ->
-    {decode_ok(Result),{noreply,State}};
+    {snc_decoder:decode_ok(Result),{noreply,State}};
 do_decode_rpc_reply(Op,Result,State)
   when Op==get; Op==get_config; Op==action ->
-    {decode_data(Result),{noreply,State}};
+    {snc_decoder:decode_data(Result),{noreply,State}};
 do_decode_rpc_reply(close_session,Result,State) ->
-    case decode_ok(Result) of
+    case snc_decoder:decode_ok(Result) of
         ok -> {ok,{stop,State}};
         Other -> {Other,{noreply,State}}
     end;
 do_decode_rpc_reply(create_subscription, Result, State) ->
-    case decode_ok(Result) of
+    case snc_decoder:decode_ok(Result) of
         ok ->
             {ok, {noreply, State}};
         Other ->
             {Other, {noreply, State}}
     end;
 do_decode_rpc_reply(get_event_streams,Result,State) ->
-    {decode_streams(decode_data(Result)),{noreply,State}};
+    {snc_decoder:decode_streams(snc_decoder:decode_data(Result)),{noreply,State}};
 do_decode_rpc_reply(undefined,Result,State) ->
     {Result,{noreply,State}}.
-
-decode_ok([{Tag,Attrs,Content}]) ->
-    case get_local_name_atom(Tag) of
-        ok ->
-            ok;
-        'rpc-error' ->
-            {error,forward_xmlns_attr(Attrs,Content)};
-        _Other ->
-            {error,{unexpected_rpc_reply,[{Tag,Attrs,Content}]}}
-    end;
-decode_ok(Other) ->
-    {error,{unexpected_rpc_reply,Other}}.
-
-decode_data([{Tag,Attrs,Content}]) ->
-    case get_local_name_atom(Tag) of
-        ok ->
-            %% when action has return type void
-            ok;
-        data ->
-            %% Since content of data has nothing from the netconf
-            %% namespace, we remove the parent's xmlns attribute here
-            %% - just to make the result cleaner
-            {ok,forward_xmlns_attr(remove_xmlnsattr_for_tag(Tag,Attrs),Content)};
-        'rpc-error' ->
-            {error,forward_xmlns_attr(Attrs,Content)};
-        _Other ->
-            {error,{unexpected_rpc_reply,[{Tag,Attrs,Content}]}}
-    end;
-decode_data(Other) ->
-    {error,{unexpected_rpc_reply,Other}}.
-
-get_qualified_name(Tag) ->
-    case string:tokens(atom_to_list(Tag),":") of
-        [TagStr] -> {[],TagStr};
-        [PrefixStr,TagStr] -> {PrefixStr,TagStr}
-    end.
-
-get_local_name_atom(Tag) ->
-    {_,TagStr} = get_qualified_name(Tag),
-    list_to_atom(TagStr).
-
-
-%% Remove the xmlns attr that points to the tag. I.e. if the tag has a
-%% prefix, remove {'xmlns:prefix',_}, else remove default {xmlns,_}.
-remove_xmlnsattr_for_tag(Tag,Attrs) ->
-    {Prefix,_TagStr} = get_qualified_name(Tag),
-    XmlnsTag = xmlnstag(Prefix),
-    case lists:keytake(XmlnsTag,1,Attrs) of
-        {value,_,NoNsAttrs} ->
-            NoNsAttrs;
-        false ->
-            Attrs
-    end.
-
-%% Take all xmlns attributes from the parent's attribute list and
-%% forward into all childrens' attribute lists. But do not overwrite
-%% any.
-forward_xmlns_attr(ParentAttrs,Children) ->
-    do_forward_xmlns_attr(get_all_xmlns_attrs(ParentAttrs,[]),Children).
-
-do_forward_xmlns_attr(XmlnsAttrs,[{ChT,ChA,ChC}|Children]) ->
-    ChA1 = add_xmlns_attrs(XmlnsAttrs,ChA),
-    [{ChT,ChA1,ChC} | do_forward_xmlns_attr(XmlnsAttrs,Children)];
-do_forward_xmlns_attr(_XmlnsAttrs,[]) ->
-    [].
-
-add_xmlns_attrs([{Key,_}=A|XmlnsAttrs],ChA) ->
-    case lists:keymember(Key,1,ChA) of
-        true ->
-            add_xmlns_attrs(XmlnsAttrs,ChA);
-        false ->
-            add_xmlns_attrs(XmlnsAttrs,[A|ChA])
-    end;
-add_xmlns_attrs([],ChA) ->
-    ChA.
-
-get_all_xmlns_attrs([{xmlns,_}=Default|Attrs],XmlnsAttrs) ->
-    get_all_xmlns_attrs(Attrs,[Default|XmlnsAttrs]);
-get_all_xmlns_attrs([{Key,_}=Attr|Attrs],XmlnsAttrs) ->
-    case atom_to_list(Key) of
-        "xmlns:"++_Prefix ->
-            get_all_xmlns_attrs(Attrs,[Attr|XmlnsAttrs]);
-        _ ->
-            get_all_xmlns_attrs(Attrs,XmlnsAttrs)
-    end;
-get_all_xmlns_attrs([],XmlnsAttrs) ->
-    XmlnsAttrs.
 
 
 %% Decode server hello to pick out session id and capabilities
@@ -573,7 +439,7 @@ decode_hello({hello,_Attrs,Hello}) ->
         {'session-id',_,[SessionId]} ->
             case lists:keyfind(capabilities,1,Hello) of
                 {capabilities,_,Capabilities} ->
-                    case decode_caps(Capabilities,[],false) of
+                    case snc_decoder:decode_caps(Capabilities,[],false) of
                         {ok,Caps} ->
                             {ok,list_to_integer(SessionId),Caps};
                         Error ->
@@ -585,37 +451,6 @@ decode_hello({hello,_Attrs,Hello}) ->
         false ->
             {error,{incorrect_hello,no_session_id_found}}
     end.
-
-decode_caps([{capability,[],[?NETCONF_BASE_CAP++Vsn=Cap]} |Caps], Acc, _) ->
-    case Vsn of
-        V when V =:= ?NETCONF_BASE_CAP_VSN orelse V =:= ?NETCONF_BASE_CAP_VSN_1_1 ->
-            decode_caps(Caps, [Cap|Acc], true);
-        _ ->
-            {error,{incompatible_base_capability_vsn,Vsn}}
-    end;
-decode_caps([{capability,[],[Cap]}|Caps],Acc,Base) ->
-    decode_caps(Caps,[Cap|Acc],Base);
-decode_caps([H|_T],_,_) ->
-    {error,{unexpected_capability_element,H}};
-decode_caps([],_,false) ->
-    {error,{incorrect_hello,no_base_capability_found}};
-decode_caps([],Acc,true) ->
-    {ok,lists:reverse(Acc)}.
-
-
-%% Return a list of {Name,Data}, where data is a {Tag,Value} list for each stream
-decode_streams({error,Reason}) ->
-    {error,Reason};
-decode_streams({ok,[{netconf,_,Streams}]}) ->
-    {ok,decode_streams(Streams)};
-decode_streams([{streams,_,Streams}]) ->
-    decode_streams(Streams);
-decode_streams([{stream,_,Stream} | Streams]) ->
-    {name,_,[Name]} = lists:keyfind(name,1,Stream),
-    [{Name,[{Tag,Value} || {Tag,_,[Value]} <- Stream, Tag /= name]}
-     | decode_streams(Streams)];
-decode_streams([]) ->
-    [].
 
 %%%-----------------------------------------------------------------
 %%% transportation stuff
