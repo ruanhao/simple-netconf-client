@@ -20,18 +20,21 @@
 -define(INFO(Msg),
         error_logger:info_msg("[~p|~p|~p] " ++ Msg ++ "~n", [?MODULE, ?LINE, self()])).
 
+-include("snc_protocol.hrl").
+-include_lib("xmerl/include/xmerl.hrl").
+
 -behaviour(gen_server).
 
 %% API
 -export([start_link/0]).
 
 %% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2, handle_info/2,
-         terminate/2, code_change/3]).
-
-
--include("snc_protocol.hrl").
--include_lib("xmerl/include/xmerl.hrl").
+-export([init/1,
+         handle_call/3,
+         handle_cast/2,
+         handle_info/2,
+         terminate/2,
+         code_change/3]).
 
 %% Client state
 -record(state, {
@@ -216,15 +219,10 @@ terminate(_Reason, _State) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
+
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-
-
-%%----------------------------------------------------------------------
-%% Internal functions
-%%----------------------------------------------------------------------
-
 
 %%%-----------------------------------------------------------------
 set_request_timer(infinity) ->
@@ -345,7 +343,7 @@ remove_initial_nl(Data) ->
 decode({Tag,Attrs,_} = E, #state{pending = Pending} = State) ->
     case snc_decoder:get_local_name_atom(Tag) of
         'rpc-reply' ->
-            case get_msg_id(Attrs) of
+            case snc_decoder:get_msg_id(Attrs) of
                 undefined ->
                     ?ERROR("rpc reply missing_msg id: ~p", [E]),
                     {noreply,State};
@@ -384,14 +382,6 @@ decode({Tag,Attrs,_} = E, #state{pending = Pending} = State) ->
             {noreply,State};
         Other ->
             ?ERROR("got_unexpected_msg: ~p, expecting: ~p", [Other, Pending])
-    end.
-
-get_msg_id(Attrs) ->
-    case lists:keyfind('message-id',1,Attrs) of
-        {_,Str} ->
-            list_to_integer(Str);
-        false ->
-            undefined
     end.
 
 decode_rpc_reply(MsgId, {_, Attrs, Content0} = E, #state{pending = Pending} = State) ->
@@ -477,6 +467,7 @@ tcp_send(Socket, Data) ->
 return({To,Ref},Result) ->
     To ! {Ref, Result},
     ok.
+
 %%----------------------------------------------------------------------
 %% END OF MODULE
 %%----------------------------------------------------------------------

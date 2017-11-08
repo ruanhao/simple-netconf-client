@@ -6,8 +6,17 @@
          forward_xmlns_attr/2,
          decode_caps/3,
          get_local_name_atom/1,
+         get_msg_id/1,
          sax_event/3]).
 
+
+get_msg_id(Attrs) ->
+    case lists:keyfind('message-id',1,Attrs) of
+        {_,Str} ->
+            list_to_integer(Str);
+        false ->
+            undefined
+    end.
 
 decode_data([{Tag,Attrs,Content}]) ->
     case get_local_name_atom(Tag) of
