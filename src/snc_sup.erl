@@ -16,7 +16,7 @@
 -define(SERVER, ?MODULE).
 
 %% Helper Macro For Declaring Children Of Supervisor
--define(CHILD(I, Type), {I, {I, start_link, []}, temporary, 5000, Type, [I]}).
+-define(CHILD(I, Type), {I, {I, start_link, []}, permanent, 5000, Type, [I]}).
 
 %%====================================================================
 %% API functions
