@@ -39,7 +39,7 @@
           no_end_tag_buff = <<>>,
           buff = <<>>,
           pending = [],    % [#pending]
-          event_callback = fun(_E) -> not_implemented_yet end}).
+          event_callback = fun(E) -> ?INFO("notification received: ~p", [E]) end}).
 
 
 %% Run-time client options.
@@ -369,7 +369,6 @@ decode({Tag,Attrs,_} = E, #state{pending = Pending} = State) ->
         notification ->
             EventCallback = State#state.event_callback,
             EventCallback(E),
-            ?INFO("notification received: ~p", [E]),
             {noreply,State};
         Other ->
             ?ERROR("got_unexpected_msg: ~p, expecting: ~p", [Other, Pending])
