@@ -110,17 +110,6 @@ handle_call({get, SimpleXml}, From, State) ->
     do_send_rpc(get, SimpleXml, From, State);
 handle_call({create_subscription, SimpleXml}, From, State) ->
     do_send_rpc(create_subscription, SimpleXml, From, State);
-handle_call(get_scheme, From, State) ->
-    Filter = [{'netconf-state', [],[{schemas, []}]}],
-    SimpleXml = snc_encoder:encode_rpc_operation(get, [Filter]),
-    do_send_rpc(get, SimpleXml, From, State);
-handle_call(subscription, From, State) ->
-    SimpleXml = snc_encoder:encode_rpc_operation(create_subscription,
-                                                 [?DEFAULT_STREAM,
-                                                  undefined,
-                                                  undefined,
-                                                  undefined]),
-    do_send_rpc(create_subscription, SimpleXml, From, State);
 handle_call(_Request, _From, State) ->
     Reply = ok,
     {reply, Reply, State}.
