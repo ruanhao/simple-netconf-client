@@ -10,17 +10,8 @@
 
 -define(SERVER, ?MODULE).
 
--define(ERROR(Msg, Values),
-        error_logger:error_msg("[~p|~p|~p] " ++ Msg ++ "~n", [?MODULE, ?LINE, self() | Values])).
--define(ERROR(Msg),
-        error_logger:error_msg("[~p|~p|~p] " ++ Msg ++ "~n", [?MODULE, ?LINE, self()])).
-
--define(INFO(Msg, Values),
-        error_logger:info_msg("[~p|~p|~p] " ++ Msg ++ "~n", [?MODULE, ?LINE, self() | Values])).
--define(INFO(Msg),
-        error_logger:info_msg("[~p|~p|~p] " ++ Msg ++ "~n", [?MODULE, ?LINE, self()])).
-
 -include("snc_protocol.hrl").
+-include("msg_trace.hrl").
 -include_lib("xmerl/include/xmerl.hrl").
 
 -behaviour(gen_server).

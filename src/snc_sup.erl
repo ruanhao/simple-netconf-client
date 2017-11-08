@@ -15,6 +15,9 @@
 
 -define(SERVER, ?MODULE).
 
+%% Helper Macro For Declaring Children Of Supervisor
+-define(CHILD(I, Type), {I, {I, start_link, []}, temporary, 5000, Type, [I]}).
+
 %%====================================================================
 %% API functions
 %%====================================================================
@@ -28,7 +31,7 @@ start_link() ->
 
 %% Child :: {Id,StartFunc,Restart,Shutdown,Type,Modules}
 init([]) ->
-    {ok, { {one_for_all, 0, 1}, []} }.
+    {ok, {{one_for_one, 5, 10}, [?CHILD(snc_client_dispatcher, worker)]}}.
 
 %%====================================================================
 %% Internal functions
