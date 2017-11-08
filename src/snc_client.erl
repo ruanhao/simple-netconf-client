@@ -17,7 +17,7 @@
 -behaviour(gen_server).
 
 %% API
--export([start_link/0]).
+-export([start_link/2]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -43,7 +43,7 @@
 
 
 %% Run-time client options.
--record(options, {host, port=8443, timeout=5000}).
+-record(options, {host, port, timeout=5000}).
 
 %% Pending replies from server
 -record(pending, {tref,    % timer ref (returned from timer:xxx)
@@ -63,8 +63,8 @@
 %% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
 %% @end
 %%--------------------------------------------------------------------
-start_link() ->
-    gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
+start_link(Host, Port) ->
+    gen_server:start_link(?MODULE, [Host, Port], []).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -81,12 +81,16 @@ start_link() ->
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init([]) ->
+init([Host, Port]) ->
     %% process_flag(trap_exit, true),
-    Option = #options{host="10.74.68.81", port=48443},
-    {ok, Sock} = tcp_connect(Option),
-    timer:send_after(0, client_hello),
-    {ok, #state{sock=Sock}}.
+    Option = #options{host=Host, port=Port},
+    case tcp_connect(Option) of
+        {ok, Sock} ->
+            timer:send_after(0, client_hello),
+            {ok, #state{sock=Sock}};
+        {error, Reason} ->
+            {stop, Reason}
+    end.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -117,8 +121,6 @@ handle_call(subscription, From, State) ->
                                                   undefined,
                                                   undefined]),
     do_send_rpc(create_subscription, SimpleXml, From, State);
-handle_call(show_state, _From, State) ->
-    {reply, State, State};
 handle_call(_Request, _From, State) ->
     Reply = ok,
     {reply, Reply, State}.
@@ -182,7 +184,7 @@ handle_info({Ref, timeout}, #state{pending=Pending} = State) ->
     %% the implementation before this patch
     {R, State#state{pending=Pending1, no_end_tag_buff= <<>>, buff= <<>>}};
 handle_info(Info, State) ->
-    error_logger:info_msg("[~p: ~p] Info: ~p~n", [?MODULE, ?LINE | [Info]]),
+    ?INFO("receive info ~p", [Info]),
     {noreply, State}.
 
 %%--------------------------------------------------------------------

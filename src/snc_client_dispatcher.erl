@@ -19,6 +19,8 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
+-export([start_client/2]).
+
 -define(SERVER, ?MODULE).
 
 -record(state, {clients=[]                      % [pid()]
@@ -27,6 +29,9 @@
 %%%===================================================================
 %%% API
 %%%===================================================================
+
+start_client(Host, Port) ->
+    gen_server:call(?SERVER, {init_client, Host, Port}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -71,6 +76,13 @@ init([]) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+handle_call({init_client, Host, Port}, _From, #state{clients=Clients} = State) ->
+    case snc_client:start_link(Host, Port) of
+        {ok, Pid} ->
+            {reply, {client, Pid}, #state{clients=[Pid | Clients]}};
+        Other ->
+            {reply, {error, Other}, State}
+    end;
 handle_call(_Request, _From, State) ->
     Reply = ok,
     {reply, Reply, State}.
@@ -98,6 +110,9 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+handle_info({'EXIT', Pid, Reason}, #state{clients=Clients}) ->
+    ?INFO("client ~p exits due to ~p", [Pid, Reason]),
+    {noreply, #state{clients=Clients--[Pid]}};
 handle_info(Info, State) ->
     ?INFO("receive info: ~p", [Info]),
     {noreply, State}.
@@ -113,8 +128,9 @@ handle_info(Info, State) ->
 %% @spec terminate(Reason, State) -> void()
 %% @end
 %%--------------------------------------------------------------------
-terminate(Reason, State) ->
-    ?INFO("teminated due to ~p, state: ~p", [Reason, State]),
+terminate(Reason, #state{clients=Clients}) ->
+    ?INFO("teminated due to ~p, clients: ~p", [Reason, Clients]),
+    [exit(Pid, kill) || Pid <- Clients],
     ok.
 
 %%--------------------------------------------------------------------

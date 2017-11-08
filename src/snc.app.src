@@ -1,5 +1,5 @@
 {application, snc,
- [{description, "An OTP application"},
+ [{description, "Simple Netconf Client"},
   {vsn, "0.1.0"},
   {registered, []},
   {mod, { snc_app, []}},
@@ -8,7 +8,8 @@
     stdlib
    ]},
   {env,[]},
-  {modules, []},
+  {modules, [snc_app,snc_client,snc_client_dispatcher,snc_decoder,
+             snc_encoder,snc_sup,snc_utils]},
 
   {maintainers, []},
   {licenses, ["Apache 2.0"]},
