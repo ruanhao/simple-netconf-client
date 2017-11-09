@@ -44,10 +44,6 @@
           pending = [],    % [#pending]
           event_callback = fun(E) -> ?INFO("notification received: ~p", [E]) end}).
 
-
-%% Run-time client options.
--record(options, {host, port, timeout=5000}).
-
 %% Pending replies from server
 -record(pending, {tref,    % timer ref (returned from timer:xxx)
                   ref,     % pending ref
@@ -56,6 +52,9 @@
                   caller}).% pid which sent the request
 
 -define(CALL_TIMEOUT, infinity).
+-define(TCP_CONNECT_TIMEOUT, 10000).
+-define(HELLO_TIMEOUT, 10000).
+-define(RPC_TIMEOUT, 10000).
 
 %%%===================================================================
 %%% API
@@ -64,8 +63,8 @@
 rpc_get(ClientPid, SimpleXml) ->
     gen_server:call(ClientPid, {get, SimpleXml}, ?CALL_TIMEOUT).
 
-rpc_create_subscription(ClientPid, SimpleXml, NotiCb) ->
-    gen_server:call(ClientPid, {create_subscription, SimpleXml, NotiCb}, ?CALL_TIMEOUT).
+rpc_create_subscription(ClientPid, SimpleXml, NotificationCallback) ->
+    gen_server:call(ClientPid, {create_subscription, SimpleXml, NotificationCallback}, ?CALL_TIMEOUT).
 
 rpc_create_subscription(ClientPid, SimpleXml) ->
     gen_server:call(ClientPid, {create_subscription, SimpleXml}, ?CALL_TIMEOUT).
@@ -96,8 +95,7 @@ start_link(Host, Port) ->
 %%--------------------------------------------------------------------
 init([Host, Port]) ->
     %% process_flag(trap_exit, true),
-    Option = #options{host=Host, port=Port},
-    case tcp_connect(Option) of
+    case tcp_connect(Host, Port) of
         {ok, Sock} ->
             timer:send_after(0, client_hello),
             {ok, #state{sock=Sock}};
@@ -162,8 +160,7 @@ handle_info(client_hello, #state{sock=Sock, hello_status=HelloStatus} = State) -
         ok ->
             case HelloStatus of
                 undefined ->
-                    Timeout = 5000,
-                    {Ref, TRef} = set_request_timer(Timeout),
+                    {Ref, TRef} = set_request_timer(?HELLO_TIMEOUT),
                     {noreply, State#state{hello_status=#pending{tref=TRef, ref=Ref}}};
                 received ->
                     {reply, ok, State#state{hello_status=done}};
@@ -245,8 +242,7 @@ do_send_rpc(PendingOp, SimpleXml, Caller,
             #state{sock=Sock, msg_id=MsgId, pending=Pending} = State) ->
     case do_send_rpc(Sock, MsgId, SimpleXml) of
         ok ->
-            Timeout = 5000,                     % 5 seconds
-            {Ref, TRef} = set_request_timer(Timeout),
+            {Ref, TRef} = set_request_timer(?RPC_TIMEOUT),
             {noreply, State#state{msg_id=MsgId+1,
                                   pending=[#pending{tref=TRef,
                                                     ref=Ref,
@@ -440,8 +436,8 @@ decode_hello({hello,_Attrs,Hello}) ->
 
 %%%-----------------------------------------------------------------
 %%% transportation stuff
-tcp_connect(#options{host=Host, timeout=Timeout, port=Port}) ->
-    case gen_tcp:connect(Host, Port, [binary, {packet, 0}], Timeout) of
+tcp_connect(Host, Port) ->
+    case gen_tcp:connect(Host, Port, [binary, {packet, 0}], ?TCP_CONNECT_TIMEOUT) of
         {ok, Sock} ->
             ?INFO("tcp connected ~p", [Host]),
             {ok, Sock};
