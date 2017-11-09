@@ -16,9 +16,6 @@
 
 -behaviour(gen_server).
 
-%% API
--export([start_link/2]).
-
 %% gen_server callbacks
 -export([init/1,
          handle_call/3,
@@ -26,6 +23,12 @@
          handle_info/2,
          terminate/2,
          code_change/3]).
+
+%% user interface
+-export([start_link/2,
+         rpc_get/2,
+         rpc_create_subscription/2,
+         rpc_create_subscription/3]).
 
 %% Client state
 -record(state, {
@@ -52,10 +55,20 @@
                   op,
                   caller}).% pid which sent the request
 
+-define(CALL_TIMEOUT, infinity).
+
 %%%===================================================================
 %%% API
 %%%===================================================================
 
+rpc_get(ClientPid, SimpleXml) ->
+    gen_server:call(ClientPid, {get, SimpleXml}, ?CALL_TIMEOUT).
+
+rpc_create_subscription(ClientPid, SimpleXml, NotiCb) ->
+    gen_server:call(ClientPid, {create_subscription, SimpleXml, NotiCb}, ?CALL_TIMEOUT).
+
+rpc_create_subscription(ClientPid, SimpleXml) ->
+    gen_server:call(ClientPid, {create_subscription, SimpleXml}, ?CALL_TIMEOUT).
 %%--------------------------------------------------------------------
 %% @doc
 %% Starts the server
@@ -110,6 +123,8 @@ handle_call({get, SimpleXml}, From, State) ->
     do_send_rpc(get, SimpleXml, From, State);
 handle_call({create_subscription, SimpleXml}, From, State) ->
     do_send_rpc(create_subscription, SimpleXml, From, State);
+handle_call({create_subscription, SimpleXml, Cb}, From, State) ->
+    do_send_rpc(create_subscription, SimpleXml, From, State#state{event_callback=Cb});
 handle_call(_Request, _From, State) ->
     Reply = ok,
     {reply, Reply, State}.
