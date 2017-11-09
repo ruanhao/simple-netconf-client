@@ -26,6 +26,7 @@
 
 %% user interface
 -export([start_link/2,
+         hello_status/1,
          rpc_get/2,
          rpc_create_subscription/2,
          rpc_create_subscription/3]).
@@ -68,6 +69,9 @@ rpc_create_subscription(ClientPid, SimpleXml, NotificationCallback) ->
 
 rpc_create_subscription(ClientPid, SimpleXml) ->
     gen_server:call(ClientPid, {create_subscription, SimpleXml}, ?CALL_TIMEOUT).
+
+hello_status(ClientPid) ->
+    gen_server:call(ClientPid, hello_status).
 %%--------------------------------------------------------------------
 %% @doc
 %% Starts the server
@@ -123,9 +127,11 @@ handle_call({create_subscription, SimpleXml}, From, State) ->
     do_send_rpc(create_subscription, SimpleXml, From, State);
 handle_call({create_subscription, SimpleXml, Cb}, From, State) ->
     do_send_rpc(create_subscription, SimpleXml, From, State#state{event_callback=Cb});
-handle_call(_Request, _From, State) ->
-    Reply = ok,
-    {reply, Reply, State}.
+handle_call(hello_status, _From, #state{hello_status=Status}=State) ->
+    {reply, Status, State};
+handle_call(Req, _From, State) ->
+    ?INFO("unknown call ~p", [Req]),
+    {reply, ok, State}.
 
 %%--------------------------------------------------------------------
 %% @private
