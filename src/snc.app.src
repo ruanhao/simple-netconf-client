@@ -2,7 +2,6 @@
  [{description, "Simple Netconf Client"},
   {vsn, "0.1.0"},
   {registered, []},
-  {mod, { snc_app, []}},
   {applications,
    [kernel,
     stdlib
