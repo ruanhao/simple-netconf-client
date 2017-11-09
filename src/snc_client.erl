@@ -178,7 +178,7 @@ handle_info(client_hello, #state{sock=Sock, hello_status=HelloStatus} = State) -
     end;
 handle_info({Ref, timeout}, #state{hello_status=#pending{ref=Ref}} = State) ->
     ?ERROR("hello session failed due to timeout"),
-    {stop, State#state{hello_status={error, timeout}}};
+    {stop, {error, hello_timeout}, State#state{hello_status={error, timeout}}};
 handle_info({Ref, timeout}, #state{pending=Pending} = State) ->
     {value, #pending{op=Op, caller=Caller}, Pending1} =
         lists:keytake(Ref, #pending.ref, Pending),
