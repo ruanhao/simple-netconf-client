@@ -4,7 +4,8 @@
   {registered, []},
   {applications,
    [kernel,
-    stdlib
+    stdlib,
+    xmerl
    ]},
   {env,[]},
   {modules, [snc_app,snc_client,snc_client_dispatcher,snc_decoder,
