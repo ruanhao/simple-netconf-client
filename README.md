@@ -28,7 +28,9 @@ For example:
 
 1. create a netconf client
 
-`{ok, Pid} = snc_client:start_link("10.74.68.81", 8443)`
+``` elrang
+{ok, Pid} = snc_client:start_link("10.74.68.81", 8443)
+```
 
 2. create subscription
 
@@ -38,5 +40,7 @@ SimpleXml = snc_encoder:encode_rpc_operation(create_subscription, CreateSubscrip
 %% SimpleXml:
 %% {'create-subscription',[{xmlns,"urn:ietf:params:xml:ns:netconf:notification:1.0"}],
 %%                        [{stream,["NETCONF"]}]}
-gen_server:call(Pid, {create_subscription, SimpleXml}).
+ok = snc_client:rpc_create_subscription(Pid, SimpleXml).
 ```
+
+All Netconf protocol logic is in module `snc_client.erl`, you can check it for more information.
