@@ -157,7 +157,12 @@ handle_cast(_Msg, State) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_info({tcp, _Sock, Data}, State) ->
-    ?INFO("recv_data: ~p", [Data]),
+    case os:getenv("SNC_TCP_TRACE") of
+        "true" ->
+            ?INFO("recv_data: ~p", [Data]);
+        _ ->
+            do_nothing
+    end,
     handle_data(Data, State);
 handle_info(client_hello, #state{sock=Sock, hello_status=HelloStatus} = State) ->
     HelloSimpleXml = snc_encoder:encode_hello([{capability, ["urn:ietf:params:netconf:capability:exi:1.0"]}]),
