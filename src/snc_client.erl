@@ -189,9 +189,9 @@ handle_info({Ref, timeout}, #state{pending=Pending} = State) ->
         lists:keytake(Ref, #pending.ref, Pending),
     return(Caller, {error,timeout}),
     R = case Op of
-	    close_session -> stop;
-	    _ -> noreply
-	end,
+            close_session -> stop;
+            _ -> noreply
+        end,
     %% Halfhearted try to get in correct state, this matches
     %% the implementation before this patch
     {R, State#state{pending=Pending1, no_end_tag_buff= <<>>, buff= <<>>}};
@@ -460,7 +460,12 @@ tcp_connect(Host, Port) ->
 tcp_send(Socket, Data) ->
     case gen_tcp:send(Socket, Data) of
         ok ->
-            ?INFO("tcp send data: ~p", [Data]),
+            case os:getenv("SNC_TCP_TRACE") of
+                "true" ->
+                    ?INFO("tcp send data: ~p", [Data]);
+                _ ->
+                    do_nothing
+            end,
             ok;
         {error, Reason} ->
             ?ERROR("tcp failed to send data ~p, reason: ~p", [Data, Reason]),
