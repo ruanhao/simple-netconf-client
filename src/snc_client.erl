@@ -201,6 +201,9 @@ handle_info({tcp_closed, _}, #state{session_id = SessionId,
     ?INFO("tcp closed for session ~p, host: ~p, port: ~p",
           [SessionId, Host, Port]),
     {stop, netconf_session_closed, State};
+handle_info(info, State) ->
+    ?INFO("state: ~p", [State]),
+    {noreply, State};
 handle_info(Info, State) ->
     ?INFO("receive info ~p", [Info]),
     {noreply, State}.
