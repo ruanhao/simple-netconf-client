@@ -448,7 +448,7 @@ decode_hello({hello,_Attrs,Hello}) ->
 %%%-----------------------------------------------------------------
 %%% transportation stuff
 tcp_connect(Host, Port) ->
-    case gen_tcp:connect(Host, Port, [binary, {packet, 0}], ?TCP_CONNECT_TIMEOUT) of
+    case gen_tcp:connect(Host, Port, [binary, {packet, 0}, {keepalive, true}], ?TCP_CONNECT_TIMEOUT) of
         {ok, Sock} ->
             ?INFO("tcp connected ~p", [Host]),
             {ok, Sock};
