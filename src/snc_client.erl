@@ -195,6 +195,12 @@ handle_info({Ref, timeout}, #state{pending=Pending} = State) ->
     %% Halfhearted try to get in correct state, this matches
     %% the implementation before this patch
     {R, State#state{pending=Pending1, no_end_tag_buff= <<>>, buff= <<>>}};
+handle_info({tcp_closed, _}, #state{session_id = SessionId,
+                                    host = Host,
+                                    port = Port} = State) ->
+    ?INFO("tcp closed for session ~p, host: ~p, port: ~p",
+          [SessionId, Host, Port]),
+    {stop, netconf_session_closed, State};
 handle_info(Info, State) ->
     ?INFO("receive info ~p", [Info]),
     {noreply, State}.
